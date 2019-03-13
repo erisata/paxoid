@@ -58,24 +58,6 @@ info(Name) ->
     gen_server:call(Name, {info}).
 
 
-%%% ============================================================================
-%%% Paxos API for updating the sequence.
-%%% ============================================================================
-
-step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
-    abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition}),
-    ok.
-
-step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
-    ok = gen_server:cast({Name, ProposerNode}, {step_prepared, StepNum, Accepted, AcceptorNode, Partition}).
-
-step_accept(Name, StepNum, Partition, Proposal) ->
-    abcast = gen_server:abcast(Partition, Name, {step_accept, StepNum, Proposal, Partition}),
-    ok.
-
-step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode) ->
-    abcast = gen_server:abcast(Partition, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}),
-    ok.
 
 
 %%% ============================================================================
@@ -155,7 +137,7 @@ init({Name, Nodes}) ->
 %%
 %%
 handle_call({next_id}, From, State) ->
-    NewState = step_request({reply, From}, State),
+    NewState = step_initialize({reply, From}, State),
     {noreply, NewState};
 
 handle_call({info}, _From, State = #state{nodes = Nodes, partn = Partn, ids = Ids, max = Max}) ->
@@ -326,7 +308,7 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
                         max   = erlang:max(Max, StepNum),
                         steps = Steps#{StepNum => NewStep#step{purpose = undefined}}
                     },
-                    step_request(Purpose, TmpState)
+                    step_initialize(Purpose, TmpState)
             end;
         false ->
             State#state{
@@ -375,10 +357,14 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 %%% ============================================================================
-%%% Internal functions.
+%%% Internal: Paxos API for updating the sequence.
 %%% ============================================================================
 
-step_request(Purpose, State) ->
+%%  @doc
+%%  Initialize new Paxos consensus for the next free element (step) of the sequence.
+%%  Here the process acts as a proposer.
+%%
+step_initialize(Purpose, State) ->
     #state{
         name  = Name,
         node  = Node,
@@ -398,5 +384,40 @@ step_request(Purpose, State) ->
     State#state{
         steps = Steps#{StepNum => NewStep}
     }.
+
+
+%%  @doc
+%%  Paxos, phase 1, the `prepare' message.
+%%  Sent from a proposer to all acceptors.
+%%
+step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
+    abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition}),
+    ok.
+
+
+%%  @doc
+%%  Paxos, phase 1, the `prepared' message.
+%%  Sent from all the acceptors to a proposer.
+%%
+step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
+    ok = gen_server:cast({Name, ProposerNode}, {step_prepared, StepNum, Accepted, AcceptorNode, Partition}).
+
+
+%%  @doc
+%%  Paxos, phase 2, the `accept!' message.
+%%  Sent from a proposer to all acceptors.
+%%
+step_accept(Name, StepNum, Partition, Proposal) ->
+    abcast = gen_server:abcast(Partition, Name, {step_accept, StepNum, Proposal, Partition}),
+    ok.
+
+
+%%  @doc
+%%  Paxos, phase 2, the `accepted' message.
+%%  Sent from from all acceptors to all the learners.
+%%
+step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode) ->
+    abcast = gen_server:abcast(Partition, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}),
+    ok.
 
 
