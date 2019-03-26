@@ -15,42 +15,61 @@
 %\--------------------------------------------------------------------
 
 %%% @private
-%%% The OPT application callback module.
+%%% Supervises all the paxoid processes, that are not running in the
+%%% context of the user application.
 %%%
--module(paxoid_app).
--behaviour(application).
--export([get_env/2]).
--export([start/2, stop/1]).
-
--define(APP, paxoid).
+-module(paxoid_col).
+-behaviour(supervisor).
+-export([start_link/0, start_child/1, start_child/2]).
+-export([init/1]).
 
 
 %%% ============================================================================
-%%% Public API.
+%%% API functions.
 %%% ============================================================================
 
+%%  @doc
 %%
 %%
+start_link() ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+
+
+%%  @doc
+%%  Add new supervised paxoid process.
 %%
-get_env(Name, Default) ->
-    application:get_env(?APP, Name, Default).
+start_child(Name) ->
+    start_child(Name, []).
+
+start_child(Name, Nodes) ->
+    supervisor:start_child(?MODULE, paxoid:start_spec(Name, Nodes)).
 
 
 
 %%% ============================================================================
-%%% Callbacks for the application.
+%%% Callbacks for `supervisor'.
 %%% ============================================================================
 
+%%  @private
 %%
 %%
-%%
-start(_StartType, _StartArgs) ->
-    paxoid_sup:start_link().
+init([]) ->
+    SupFlags = #{
+        strategy  => one_for_one,
+        intensity => 10,
+        period    => 10
+    },
+    Predefined = paxoid_app:get_env(predefined, []),
+    {ok, {SupFlags, lists:map(fun child_spec/1, Predefined)}}.
+
 
 %%
 %%
 %%
-stop(_State) ->
-    ok.
+child_spec(Name) when is_atom(Name) ->
+    paxoid:start_spec(Name, []);
+
+child_spec({Name, Nodes}) when is_atom(Name), is_list(Nodes) ->
+    paxoid:start_spec(Name, Nodes).
 
 

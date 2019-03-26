@@ -1,9 +1,26 @@
+%/--------------------------------------------------------------------
+%| Copyright 2019 Erisata, UAB (Ltd.)
+%|
+%| Licensed under the Apache License, Version 2.0 (the "License");
+%| you may not use this file except in compliance with the License.
+%| You may obtain a copy of the License at
+%|
+%|     http://www.apache.org/licenses/LICENSE-2.0
+%|
+%| Unless required by applicable law or agreed to in writing, software
+%| distributed under the License is distributed on an "AS IS" BASIS,
+%| WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%| See the License for the specific language governing permissions and
+%| limitations under the License.
+%\--------------------------------------------------------------------
+
 %%% @doc
 %%% The Paxos based distributed sequence.
 %%%
 -module(paxoid).
 -behaviour(gen_server).
--export([start_link/1, start_link/2, start_spec/1, start/1, join/2, next_id/1, next_id/2, info/1]).
+-export([start_link/1, start_link/2, start_sup/1, start_sup/2, start_spec/1, start_spec/2]).
+-export([start/1, join/2, next_id/1, next_id/2, info/1]).
 -export([sync_info/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
@@ -21,8 +38,8 @@
 -type step_data()  :: {step_round(), step_value()}.
 
 
-%%
-%%
+%%  @doc
+%%  Start a paxoid process/node.
 %%
 start_link(Name) when is_atom(Name) ->
     start_link(Name, []).
@@ -31,13 +48,30 @@ start_link(Name, Nodes) when is_atom(Name), is_list(Nodes) ->
     gen_server:start_link({local, Name}, ?MODULE, {Name, Nodes}, []).
 
 
+%%  @doc
+%%  Start a paxoid process supervised by the paxoid instead of user application.
+%%
+start_sup(Name) ->
+    start_sup(Name, []).
+
+start_sup(Name, Nodes) ->
+    paxoid_col:start_child(Name, Nodes).
+
+
 %%
 %%
 %%
 start_spec(Name) ->
+    start_spec(Name, []).
+
+
+%%
+%%
+%%
+start_spec(Name, Nodes) ->
     #{
         id    => Name,
-        start => {?MODULE, start_link, [Name]}
+        start => {?MODULE, start_link, [Name, Nodes]}
     }.
 
 
@@ -179,9 +213,13 @@ init({Name, Nodes}) ->
 %%
 %%
 %%
-handle_call({next_id, Timeout}, From, State) ->
-    NewState = step_do_initialize({reply, From}, Timeout, State),
+handle_call({next_id, Timeout}, From, State = #state{mode = Mode}) ->
+    NewState = case Mode of
+        ready -> step_do_initialize({reply, From}, Timeout, State);
+        _     -> phase_enqueue_request(From, Timeout, State)
+    end,
     {noreply, NewState};
+
 
 handle_call({info}, _From, State = #state{mode = Mode, known = Known, seen = Seen, part = Part, ids = Ids, min = Min, max = Max}) ->
     Info = #{
@@ -484,6 +522,16 @@ code_change(_OldVsn, State, _Extra) ->
 %%% ============================================================================
 %%% Internal: Startup phases.
 %%% ============================================================================
+
+%%  @private
+%%
+%%
+phase_enqueue_request(ReplyTo, Timeout, State = #state{reqs = Reqs}) ->
+    GiveupTime = erlang:system_time(millisecond) + Timeout,
+    State#state{
+        reqs = [#req{reply_to = ReplyTo, giveup_time = GiveupTime} | Reqs]
+    }.
+
 
 %%  @private
 %%
@@ -803,7 +851,7 @@ join_sync_req(PeerNode, From, Till, MaxSize, State = #state{name = Name, node = 
         SelectIds([], _Count, AccIds) ->
             {Till, lists:reverse(AccIds)}
     end,
-    {ResIds, ResTill} = SelectIds(lists:usort(Ids), MaxSize, []),
+    {ResTill, ResIds} = SelectIds(lists:usort(Ids), MaxSize, []),
     gen_server:cast({Name, PeerNode}, {join_sync_res, ThisNode, From, ResTill, ResIds}),
     State.
 
@@ -830,7 +878,7 @@ join_sync_res(PeerNode, From, Till, PeerIds, State = #state{max = Max, ids = Ids
     TmpStateDupIds = lists:foldl(fun (Id, AccState) ->
         case lists:member(Id, DupIds) of
             true  -> AccState; % Only start the allocation on the first detection.
-            false -> step_do_initialize({join, Id}, ?DEFAULT_TIMEOUT, AccState)      % TODO: handle purpose.
+            false -> step_do_initialize({join, Id}, ?DEFAULT_TIMEOUT, AccState)
         end
     end, State, DuplicatedIds),
     %
@@ -849,7 +897,7 @@ join_sync_res(PeerNode, From, Till, PeerIds, State = #state{max = Max, ids = Ids
             NewJoin = Join#join{
                 from    = NewFrom,
                 till    = lists:max([OurTill, Max | maps:keys(Steps)]),
-                dup_ids = lists:usort(OurJoinDupIds, DuplicatedIds)
+                dup_ids = lists:usort(OurJoinDupIds ++ DuplicatedIds)
             },
             NewState = TmpStateDupSteps#state{
                 joining = Joining#{PeerNode := NewJoin}

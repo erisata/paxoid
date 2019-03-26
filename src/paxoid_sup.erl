@@ -47,6 +47,12 @@ init([]) ->
         intensity => 10,
         period    => 10
     },
-    {ok, {SupFlags, []}}.
+    {ok, {SupFlags, [
+        #{
+            id    => paxoid_col,
+            start => {paxoid_col, start_link, []},
+            type  => supervisor
+        }
+    ]}}.
 
 
