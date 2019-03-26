@@ -19,10 +19,11 @@
 %%%
 -module(paxoid_SUITE).
 -export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([do_next_id_seq/2]).
 -export([
     test_simple/1,
     test_burst/1,
-    test_burst__seq/2
+    test_join/1
 ]).
 -include_lib("kernel/include/inet.hrl").
 -include_lib("common_test/include/ct.hrl").
@@ -38,7 +39,8 @@
 all() ->
     [
         test_simple,
-        test_burst
+        test_burst,
+        test_join
     ].
 
 %%
@@ -81,12 +83,19 @@ end_per_suite(Config) ->
 %%% ============================================================================
 
 %%
-%%
+%%  Gets a hostname of the current node.
 %%
 this_host() ->
     {ok, ShortHostname} = inet:gethostname(),
     {ok, #hostent{h_name = FullHostname}} = inet:gethostbyname(ShortHostname),
     {ok, FullHostname}.
+
+
+%%
+%%  Used to run a sequence of calls on the remote server.
+%%
+do_next_id_seq(Name, Count) ->
+    lists:map(fun (_) -> paxoid:next_id(Name) end, lists:seq(1, Count)).
 
 
 
@@ -95,7 +104,7 @@ this_host() ->
 %%% ============================================================================
 
 %%
-%%
+%%  Check, if unique IDs are generated in the cluster.
 %%
 test_simple(Config) ->
     Nodes = proplists:get_value(started_nodes, Config),
@@ -106,19 +115,49 @@ test_simple(Config) ->
 
 
 %%
-%%
+%%  Check if several parallel bursts are producing unique IDs.
 %%
 test_burst(Config) ->
     Count = 2000,
     Nodes = proplists:get_value(started_nodes, Config),
     {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Nodes]),
-    {Ids,                         []} = rpc:multicall(Nodes, ?MODULE, test_burst__seq, [?FUNCTION_NAME, Count]),
+    {Ids,                         []} = rpc:multicall(Nodes, ?MODULE, do_next_id_seq, [?FUNCTION_NAME, Count]),
     ct:pal("IDS: ~p~n", [Ids]),
     ExpectedIds = lists:seq(1, Count * 3),
     ExpectedIds = lists:sort(lists:append(Ids)),
     ok.
 
-test_burst__seq(Name, Count) ->
-    lists:map(fun (_) -> paxoid:next_id(Name) end, lists:seq(1, Count)).
+
+%%
+%%  Check, if nodes with the same IDs can be joined together.
+%%
+test_join(Config) ->
+    [NodeA | _] = Nodes = proplists:get_value(started_nodes, Config),
+    %
+    % Start nodes in a disconnected mode (3 separate clusters of 1 node).
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, []]),
+    {[ok,      ok,      ok     ], []} = rpc:multicall(Nodes, paxoid, start,     [?FUNCTION_NAME]),
+    {Ids,                         []} = rpc:multicall(Nodes, ?MODULE, do_next_id_seq, [?FUNCTION_NAME, 3]),
+    9         = length(lists:append(Ids)),      % We should have 9 ids in total.
+    [1, 2, 3] = lists:usort(lists:append(Ids)), % Now ids are duplicated, nodes are not joined yet.
+    %
+    % Merge the nodes
+    ok = rpc:call(NodeA, paxoid, join, [?FUNCTION_NAME, Nodes]),
+    WaitForJoin = fun WaitForJoin() ->
+        {Infos, []} = rpc:multicall(Nodes, paxoid, info, [?FUNCTION_NAME]),
+        AllMerged = fun (#{partition := Partition}) ->
+            [] =:= Nodes -- Partition
+        end,
+        case lists:all(AllMerged, Infos) of
+            true -> ok;
+            false -> timer:sleep(100), WaitForJoin()
+        end
+    end,
+    WaitForJoin(),
+    %
+    % Check, if IDs are unique after the merge.
+    {NewIds, []} = rpc:multicall(Nodes, ?MODULE, do_next_id_seq, [?FUNCTION_NAME, 3]),
+    9 = length(lists:usort(lists:append(NewIds))),
+    ok.
 
 
