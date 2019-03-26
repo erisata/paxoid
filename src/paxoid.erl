@@ -1,22 +1,25 @@
 %%% @doc
-%%% The master node for a distributed sequence.
+%%% The Paxos based distributed sequence.
 %%%
 -module(paxoid).
 -behaviour(gen_server).
--export([start_link/1, start_link/2, start_spec/1, join/2, next_id/1, next_id/2, info/1]).
+-export([start_link/1, start_link/2, start_spec/1, start/1, join/2, next_id/1, next_id/2, info/1]).
 -export([sync_info/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--define(PART_SYNC_INTERVAL, 5000).
+-define(SYNC_INTERVAL,      5000).
 -define(DEFAULT_RETRY,      1000).
 -define(DEFAULT_TIMEOUT,    5000).
 -define(MAX_JOIN_SYNC_SIZE, 1000).
+-define(INIT_DISC_TIMEOUT,  3000).
+-define(INIT_JOIN_TIMEOUT, 15000).
 
 -type num() :: pos_integer().
 
 -type step_round() :: {RandomInteger :: integer(), Node :: node()}.
 -type step_value() :: node().
 -type step_data()  :: {step_round(), step_value()}.
+
 
 %%
 %%
@@ -32,7 +35,17 @@ start_link(Name, Nodes) when is_atom(Name), is_list(Nodes) ->
 %%
 %%
 start_spec(Name) ->
-    paxoid_seq_sup:start_spec(Name).
+    #{
+        id    => Name,
+        start => {?MODULE, start_link, [Name]}
+    }.
+
+
+%%  @doc
+%%  Start this node even if no peers can be discovered.
+%%
+start(Name) ->
+    gen_server:cast(Name, {start}).
 
 
 %%
@@ -104,10 +117,15 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
     dup_ids :: [num()]
 }).
 
+-record(req, {
+    reply_to    :: term(),
+    giveup_time :: integer()
+}).
+
 -record(state, {
     name    :: atom(),                          % Name of the sequence.
     node    :: node(),                          % The current node.
-    mode    :: joining | active,                % ... ?????????? TODO
+    mode    :: discovering | joining | ready,   % ... ?????????? TODO
     reqs    :: [term()],                        % Pending requests? TODO
     known   :: [node()],                        % All known nodes.
     seen    :: #{node() => Time :: integer()},  % All seen nodes, not yet joined to the partition (`keys(seen) \subseteq known').
@@ -138,7 +156,8 @@ init({Name, Nodes}) ->
     State = #state{
         name    = Name,
         node    = Node,
-        mode    = joining,
+        mode    = discovering,
+        reqs    = [],
         known   = Known = lists:usort([Node | Nodes]),
         seen    = #{Node => Now},
         part    = [Node],
@@ -147,11 +166,14 @@ init({Name, Nodes}) ->
         max     = Max,
         map     = #{},
         retry   = ?DEFAULT_RETRY,
-        steps   = #{}
+        steps   = #{},
+        joining = #{},
+        dup_ids = []
     },
     ok = ?MODULE:sync_info(Name, Node, Known, Max, 1),
-    _ = erlang:send_after(?PART_SYNC_INTERVAL, self(), sync_timer),
-    {ok, State}.
+    _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
+    NewState = phase_start_discovering(State),
+    {ok, NewState}.
 
 
 %%
@@ -161,10 +183,10 @@ handle_call({next_id, Timeout}, From, State) ->
     NewState = step_do_initialize({reply, From}, Timeout, State),
     {noreply, NewState};
 
-handle_call({info}, _From, State = #state{known = Known, seen = Seen, part = Part, ids = Ids, min = Min, max = Max}) ->
-    SeenNodes = maps:keys(Seen),
+handle_call({info}, _From, State = #state{mode = Mode, known = Known, seen = Seen, part = Part, ids = Ids, min = Min, max = Max}) ->
     Info = #{
-        offline   => Known -- SeenNodes,
+        mode      => Mode,
+        offline   => Known -- maps:keys(Seen),
         joining   => join_pending(State),
         partition => Part,
         ids       => Ids,
@@ -181,6 +203,16 @@ handle_call(Unknown, _From, State) ->
 %%
 %%
 %%
+handle_cast({start}, State = #state{mode = Mode}) ->
+    NewState = case Mode of
+        discovering ->
+            error_logger:info_msg("Starting node on request, entering the joining mode.~n"),
+            phase_start_joining(State);
+        _ ->
+            State
+    end,
+    {noreply, NewState};
+
 handle_cast({join, Nodes}, State = #state{name = Name, node = Node, known = Known, max = Max}) ->
     NewKnown = lists:usort(Nodes ++ Known),
     NewState = State#state{
@@ -189,16 +221,25 @@ handle_cast({join, Nodes}, State = #state{name = Name, node = Node, known = Know
     ok = ?MODULE:sync_info(Name, Node, NewKnown, Max, 1),
     {noreply, NewState};
 
-handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node = ThisNode, known = Known, seen = Seen, max = OldMax}) ->
+handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node = ThisNode, mode = Mode, known = Known, seen = Seen, max = OldMax}) ->
     Now      = erlang:monotonic_time(seconds),
     NewKnown = lists:usort(Nodes ++ Known),
+    NewSeen  = Seen#{Node => Now, ThisNode => Now},
     NewMax   = erlang:max(Max, OldMax),
-    TmpState = State#state{
+    TmpState = join_start_if_needed(State#state{
         known = NewKnown,
-        seen  = Seen#{Node => Now, ThisNode => Now},
+        seen  = NewSeen,
         max   = NewMax
-    },
-    NewState = join_start_if_needed(TmpState),
+    }),
+    NewState = case {Mode, NewKnown, NewKnown -- maps:keys(NewSeen)} of
+        {discovering, [ThisNode], _} ->
+            TmpState;
+        {discovering, _, []} ->
+            error_logger:info_msg("Discovery of nodes completed, entering the join phase.~n"),
+            phase_start_joining(TmpState);
+        {_, _, _} ->
+            TmpState
+    end,
     if TTL  >  0 -> ok = ?MODULE:sync_info(Name, ThisNode, NewKnown, NewMax, TTL - 1);
        TTL =:= 0 -> ok
     end,
@@ -353,23 +394,52 @@ handle_cast(Unknown, State) ->
 %%
 %%
 %%
-handle_info(sync_timer, State = #state{name = Name, node = Node, known = Known, seen = Seen, part = Part, max = Max}) ->
+handle_info(init_disc_timeout, State = #state{mode = Mode, node = ThisNode, known = Known}) ->
+    case {Mode, Known} of
+        {discovering, [ThisNode]} ->
+            error_logger:info_msg("Discovery of nodes timed out, will wait for user command to start.~n"),
+            {noreply, State};
+        {discovering, [_|_]} ->
+            error_logger:info_msg("Discovery of nodes timed out, continuing with ~p.~n", [Known]),
+            NewState = phase_start_joining(State),
+            {noreply, NewState};
+        {joining, _}->
+            {noreply, State};
+        {ready, _} ->
+            {noreply, State}
+    end;
+
+handle_info(init_join_timeout, State = #state{mode = Mode, joining = Joining}) ->
+    case Mode of
+        discovering ->
+            error_logger:warning_msg("Join timeout in the discovering mode, something wrong.~n"),
+            NewState = phase_start_ready(State),
+            {noreply, NewState};
+        joining ->
+            error_logger:warning_msg("Join timed out, going to the ready mode while joining=~p.~n", [maps:keys(Joining)]),
+            NewState = phase_start_ready(State),
+            {noreply, NewState};
+        ready ->
+            {noreply, State}
+    end;
+
+handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Known, seen = Seen, part = Part, max = Max}) ->
     %
     % Update the list of seen nodes.
     Now = erlang:monotonic_time(seconds),
     NewSeen = maps:filter(fun (_, NodeTime) ->
-        (Now - NodeTime) > (?PART_SYNC_INTERVAL * 2)
-    end, Seen#{Node => Now}),
+        (Now - NodeTime) < (?SYNC_INTERVAL * 2)
+    end, Seen#{ThisNode => Now}),
     %
     % Shrink our partition, if some nodes become unreachable.
     NewPart = lists:filter(fun (PartNode) ->
-        maps:is_key(PartNode, NewSeen)
+        (PartNode =:= ThisNode) orelse maps:is_key(PartNode, NewSeen)
     end, Part),
     %
     % TODO: Should we update the partitions for all the ongoing steps?
     %
-    ok = ?MODULE:sync_info(Name, Node, Known, Max, 1),
-    _ = erlang:send_after(?PART_SYNC_INTERVAL, self(), sync_timer),
+    ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 1),
+    _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
     NewState = State#state{
         seen = NewSeen,
         part = NewPart
@@ -408,6 +478,64 @@ terminate(_Reason, _State) ->
 %%
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+
+%%% ============================================================================
+%%% Internal: Startup phases.
+%%% ============================================================================
+
+%%  @private
+%%
+%%
+phase_start_discovering(State = #state{node = ThisNode, known = Known}) ->
+    case Known of
+        [ThisNode] ->
+            error_logger:info_msg("This node is started as standalone, will wait for explicit start event.~n");
+        [_|_] ->
+            error_logger:info_msg("Starting the discovery phase, known hosts: ~p.~n", [Known]),
+            _ = erlang:send_after(?INIT_DISC_TIMEOUT, self(), init_disc_timeout)
+    end,
+    State#state{
+        mode = discovering
+    }.
+
+
+%%  @private
+%%
+%%
+phase_start_joining(State = #state{joining = Joining}) ->
+    case maps:size(Joining) of
+        0 ->
+            error_logger:info_msg("There is no hosts to join with, entering the ready mode.~n"),
+            phase_start_ready(State);
+        _ ->
+            _ = erlang:send_after(?INIT_JOIN_TIMEOUT, self(), init_join_timeout),
+            State#state{
+                mode = joining
+            }
+    end.
+
+
+%%  @private
+%%
+%%
+phase_start_ready(State = #state{reqs = Reqs}) ->
+    Now = erlang:system_time(millisecond),
+    TmpState = State#state{
+        mode = ready,
+        reqs = []
+    },
+    lists:foldr(fun (#req{reply_to = ReplyTo, giveup_time = GiveupTime}, AccState) ->
+        Timeout = GiveupTime - Now,
+        case Timeout > 0 of
+            true ->
+                step_do_initialize({reply, ReplyTo}, Timeout, AccState);
+            false ->
+                error_logger:warning_msg("Droppig next_id request from ~p, expired ~pms ago.~n", [ReplyTo, -Timeout]),
+                AccState
+        end
+    end, TmpState, Reqs).
 
 
 
@@ -585,7 +713,7 @@ join_start_if_needed(State = #state{joining = Joining}) ->
     },
     lists:foldl(fun (Node, St) ->
         join_start(Node, St)
-    end, TmpState, Pending -- maps:kes(Joining)).
+    end, TmpState, Pending -- maps:keys(Joining)).
 
 
 %%
@@ -665,12 +793,15 @@ join_attempt(PeerNode, Ref, State = #state{name = Name, node = ThisNode, joining
 %%  maybe via callback, a database query, etc.
 %%
 join_sync_req(PeerNode, From, Till, MaxSize, State = #state{name = Name, node = ThisNode, ids = Ids}) ->
-    SelectIds = fun SelectIds([Id | Other], Count, AccIds) ->
-        if  Count =< 0 -> {hd(AccIds), lists:reverse(AccIds)};       % Overflow by size.
-            Id > Till  -> {Till, lists:reverse(AccIds)};             % Range scanned.
-            Id < From  -> SelectIds(Other, Count, AccIds);           % Skip the first ids.
-            true       -> SelectIds(Other, Count - 1, [Id | AccIds]) % Collect them.
-        end
+    SelectIds = fun
+        SelectIds([Id | Other], Count, AccIds) ->
+            if  Count =< 0 -> {hd(AccIds), lists:reverse(AccIds)};       % Overflow by size.
+                Id > Till  -> {Till, lists:reverse(AccIds)};             % Range scanned.
+                Id < From  -> SelectIds(Other, Count, AccIds);           % Skip the first ids.
+                true       -> SelectIds(Other, Count - 1, [Id | AccIds]) % Collect them.
+            end;
+        SelectIds([], _Count, AccIds) ->
+            {Till, lists:reverse(AccIds)}
     end,
     {ResIds, ResTill} = SelectIds(lists:usort(Ids), MaxSize, []),
     gen_server:cast({Name, PeerNode}, {join_sync_res, ThisNode, From, ResTill, ResIds}),
@@ -753,10 +884,17 @@ join_sync_id_allocated(DupId, NewId, State = #state{map = Map, dup_ids = DupIds,
 %%
 %%
 %%
-join_finalize(PeerNode, State = #state{part = Part, joining = Joining}) ->
+join_finalize(PeerNode, State = #state{mode = Mode, part = Part, joining = Joining}) ->
     NewPart    = lists:usort([PeerNode | Part]),
     NewJoining = maps:remove(PeerNode, Joining),
-    State#state{
+    TmpState = case {Mode, maps:size(NewJoining)} of
+        {joining, 0} ->
+            error_logger:info_msg("All nodes joined, entering the ready mode.~n"),
+            phase_start_ready(State);
+        {_, _} ->
+            State
+    end,
+    TmpState#state{
         part    = NewPart,
         joining = NewJoining
     }.
