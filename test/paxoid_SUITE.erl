@@ -23,7 +23,8 @@
 -export([
     test_simple/1,
     test_burst/1,
-    test_join/1
+    test_join/1,
+    test_file/1
 ]).
 -include_lib("kernel/include/inet.hrl").
 -include_lib("common_test/include/ct.hrl").
@@ -40,7 +41,8 @@ all() ->
     [
         test_simple,
         test_burst,
-        test_join
+        test_join,
+        test_file
     ].
 
 %%
@@ -57,13 +59,7 @@ init_per_suite(Config) ->
     pang = net_adm:ping(erlang:list_to_atom("paxoid_SUITE_A" ++ "@" ++ ThisHost)),
     pang = net_adm:ping(erlang:list_to_atom("paxoid_SUITE_B" ++ "@" ++ ThisHost)),
     pang = net_adm:ping(erlang:list_to_atom("paxoid_SUITE_C" ++ "@" ++ ThisHost)),
-    {ok, NodeA} = slave:start(ThisHost, paxoid_SUITE_A),
-    {ok, NodeB} = slave:start(ThisHost, paxoid_SUITE_B),
-    {ok, NodeC} = slave:start(ThisHost, paxoid_SUITE_C),
-    Nodes    = [NodeA, NodeB, NodeC],
-    CodePath = lists:filter(fun filelib:is_dir/1, code:get_path()),
-    {[true,    true,    true   ], []} = rpc:multicall(Nodes, code, set_path, [CodePath]),
-    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, application, ensure_all_started, [paxoid]),
+    {ok, Nodes} = start_nodes(Config),
     ct:pal("Starting slave nodes... done, nodes=~p~n", [Nodes]),
     [{started_apps, []}, {started_nodes, Nodes} | Config].
 
@@ -73,9 +69,8 @@ init_per_suite(Config) ->
 %%
 end_per_suite(Config) ->
     [ ok = application:stop(App) || App  <- proplists:get_value(started_apps,  Config)],
-    [ ok = slave:stop(Node)      || Node <- proplists:get_value(started_nodes, Config)],
+    ok = stop_nodes(proplists:get_value(started_nodes, Config)),
     ok.
-
 
 
 %%% ============================================================================
@@ -89,6 +84,29 @@ this_host() ->
     {ok, ShortHostname} = inet:gethostname(),
     {ok, #hostent{h_name = FullHostname}} = inet:gethostbyname(ShortHostname),
     {ok, FullHostname}.
+
+
+%%
+%%
+%%
+start_nodes(_Config) ->
+    {ok, ThisHost} = this_host(),
+    {ok, NodeA} = slave:start(ThisHost, paxoid_SUITE_A),
+    {ok, NodeB} = slave:start(ThisHost, paxoid_SUITE_B),
+    {ok, NodeC} = slave:start(ThisHost, paxoid_SUITE_C),
+    Nodes    = [NodeA, NodeB, NodeC],
+    CodePath = lists:filter(fun filelib:is_dir/1, code:get_path()),
+    {[true,    true,    true   ], []} = rpc:multicall(Nodes, code, set_path, [CodePath]),
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, application, ensure_all_started, [paxoid]),
+    {ok, lists:sort(Nodes)}.
+
+
+%%
+%%
+%%
+stop_nodes(Nodes) ->
+    [ ok = slave:stop(Node) || Node <- Nodes],
+    ok.
 
 
 %%
@@ -159,6 +177,36 @@ test_join(Config) ->
     {NewInfos, []} = rpc:multicall(Nodes, paxoid, info, [?FUNCTION_NAME]),
     ct:pal("NewInfos: ~p~n", [NewInfos]),
     9 = length(lists:usort(lists:append([NewIds || {ok, #{ids := NewIds}} <- NewInfos]))),
+    ok.
+
+
+%%
+%%  Check if the file based callback works.
+%%
+test_file(Config) ->
+    Nodes = proplists:get_value(started_nodes, Config),
+    Opts = #{
+        join     => Nodes,
+        callback => paxoid_cb_file
+    },
+    %
+    % Produce some IDs.
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Opts]),
+    {Ids,                         []} = rpc:multicall(Nodes, paxoid, next_id,   [?FUNCTION_NAME]),
+    [1, 2, 3] = lists:sort(Ids),
+    %
+    % Restart the nodes.
+    ok = stop_nodes(Nodes),
+    {ok, Nodes} = start_nodes(Config),
+    %
+    % Produce some more ids.
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Opts]),
+    {NewIds,                      []} = rpc:multicall(Nodes, paxoid, next_id,   [?FUNCTION_NAME]),
+    [4, 5, 6] = lists:sort(NewIds),
+    %
+    % Check, if all the history is returned.
+    {Infos, []} = rpc:multicall(Nodes, paxoid, info, [?FUNCTION_NAME]),
+    [1, 2, 3, 4, 5, 6] = lists:sort(lists:append([I || {ok, #{ids := I}} <- Infos])),
     ok.
 
 

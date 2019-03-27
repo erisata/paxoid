@@ -21,6 +21,7 @@
 %%%
 -module(paxoid_cb_mem).
 -behaviour(paxoid).
+-export([extract_data/1]).
 -export([
     init/1,
     describe/1,
@@ -31,7 +32,6 @@
     handle_check/2
 ]).
 
-
 %%% ============================================================================
 %%% Internal state.
 %%% ============================================================================
@@ -40,10 +40,18 @@
 %%  The state for this callback module.
 %%
 -record(state, {
-    ids :: [paxoid:num()],
     max :: paxoid:num(),
+    ids :: [paxoid:num()],
     map :: #{Old :: paxoid:num() => New :: paxoid:num()}
 }).
+
+
+%%  @doc
+%%  A helper function for extracting state from this callback for the
+%%  callback implementations that decide to reuse this in-memory model.
+%%
+extract_data(#state{max = Max, ids = Ids, map = Map}) ->
+    {ok, Max, Ids, Map}.
 
 
 
@@ -57,10 +65,11 @@
 init(Args) ->
     Max = maps:get(max, Args, 0),
     Ids = maps:get(ids, Args, []),
+    Map = maps:get(map, Args, #{}),
     State = #state{
         ids = Ids,
         max = Max,
-        map = #{}
+        map = Map
     },
     {ok, Max, State}.
 
