@@ -23,6 +23,7 @@
 -export([start/1, join/2, next_id/1, next_id/2, info/1]).
 -export([sync_info/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export_type([num/0, opts/0]).
 
 -define(SYNC_INTERVAL,      5000).
 -define(DEFAULT_RETRY,      1000).
@@ -37,42 +38,142 @@
 -type step_value() :: node().
 -type step_data()  :: {step_round(), step_value()}.
 
+-type opts() :: #{
+    join     => [node()],
+    callback => (module() | {module(), Args :: term()})
+}.
+
+
+%%% ============================================================================
+%%% Callback definitions.
+%%% ============================================================================
+
+%%
+%%
+%%
+-callback init(
+        Args :: term()
+    ) ->
+        {ok, Max :: num(), State :: term()}.
+
+
+%%
+%%
+%%
+-callback describe(
+        State :: term()
+    ) ->
+        {ok,
+            Info :: #{ids => [paxoid:num()], Other :: term() => term()},
+            NewState :: term()
+        }.
+
+
+%%
+%%
+%%
+-callback handle_new_id(
+        NewId :: num(),
+        State :: term()
+    ) ->
+        {ok, NewState :: term()}.
+
+
+%%
+%%
+%%
+-callback handle_new_map(
+        OldId :: num(),
+        NewId :: num(),
+        State :: term()
+    ) ->
+        {ok, NewState :: term()}.
+
+
+%%
+%%
+%%
+-callback handle_new_max(
+        NewMax :: num(),
+        State :: term()
+    ) ->
+        {ok, NewState :: term()}.
+
+
+%%
+%%
+%%
+-callback handle_select(
+        From     :: num(),
+        Till     :: num(),
+        MaxCount :: integer(),
+        State    :: term()
+    ) ->
+        {ok,
+            ResTill  :: num(),
+            ResIds   :: [num()],
+            NewState :: term()
+        }.
+
+
+%%
+%%
+%%
+-callback handle_check(
+        PeerIds :: [num()],
+        State   :: term()
+    ) ->
+        {ok,
+            DuplicatedIds :: [num()],
+            NewState :: term()
+        }.
+
+
+
+%%% ============================================================================
+%%% Public API.
+%%% ============================================================================
 
 %%  @doc
 %%  Start a paxoid process/node.
 %%
-start_link(Name) when is_atom(Name) ->
-    start_link(Name, []).
+-spec start_link(
+        Name :: atom(),
+        Opts :: opts()
+    ) ->
+        {ok, pid()} |
+        {error, Reason :: term()}.
 
-start_link(Name, Nodes) when is_atom(Name), is_list(Nodes) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Name, Nodes}, []).
+start_link(Name, Opts) when is_atom(Name), is_map(Opts) ->
+    gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+
+start_link(Name) when is_atom(Name) ->
+    start_link(Name, #{}).
 
 
 %%  @doc
 %%  Start a paxoid process supervised by the paxoid instead of user application.
 %%
+start_sup(Name, Opts) ->
+    paxoid_col:start_child(Name, Opts).
+
 start_sup(Name) ->
-    start_sup(Name, []).
-
-start_sup(Name, Nodes) ->
-    paxoid_col:start_child(Name, Nodes).
+    start_sup(Name, #{}).
 
 
+%%  @doc
+%%  Produces a supervisor's child specification for starting
+%%  this process.
 %%
-%%
-%%
-start_spec(Name) ->
-    start_spec(Name, []).
-
-
-%%
-%%
-%%
-start_spec(Name, Nodes) ->
+start_spec(Name, Opts) ->
     #{
         id    => Name,
-        start => {?MODULE, start_link, [Name, Nodes]}
+        start => {?MODULE, start_link, [Name, Opts]}
     }.
+
+start_spec(Name) ->
+    start_spec(Name, #{}).
+
 
 
 %%  @doc
@@ -159,15 +260,15 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
 -record(state, {
     name    :: atom(),                          % Name of the sequence.
     node    :: node(),                          % The current node.
-    mode    :: discovering | joining | ready,   % ... ?????????? TODO
-    reqs    :: [term()],                        % Pending requests? TODO
+    mode    :: discovering | joining | ready,   % Startup phase.
+    reqs    :: [term()],                        % Pending requests, accumulated if mode =/= ready.
+    cb_mod  :: module(),
+    cb_st   :: term(),
     known   :: [node()],                        % All known nodes.
     seen    :: #{node() => Time :: integer()},  % All seen nodes, not yet joined to the partition (`keys(seen) \subseteq known').
     part    :: [node()],                        % Nodes in te current partition (`part \subseteq keys(seen)').
-    ids     :: [num()],                         % Known ids, allocated to this node.
     min     :: num(),                           % Mimimal choosable ID (exclusive).
     max     :: num(),                           % Maximal known chosen ID (inclusive, globally).
-    map     :: #{Old :: num() => New :: num()}, % Mapping (Old -> New).
     retry   :: integer(),                       % Retry period.
     steps   :: #{Step :: num() => #step{}},
     joining :: #{Node :: node() => #join{}},    % All the ongoing join processes.
@@ -183,31 +284,38 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
 %%
 %%
 %%
-init({Name, Nodes}) ->
+init({Name, Opts}) ->
     Now  = erlang:monotonic_time(seconds),
     Node = node(),
-    Max  = 0,
-    State = #state{
-        name    = Name,
-        node    = Node,
-        mode    = discovering,
-        reqs    = [],
-        known   = Known = lists:usort([Node | Nodes]),
-        seen    = #{Node => Now},
-        part    = [Node],
-        ids     = [],
-        min     = Max,
-        max     = Max,
-        map     = #{},
-        retry   = ?DEFAULT_RETRY,
-        steps   = #{},
-        joining = #{},
-        dup_ids = []
-    },
-    ok = ?MODULE:sync_info(Name, Node, Known, Max, 1),
-    _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
-    NewState = phase_start_discovering(State),
-    {ok, NewState}.
+    Nodes = maps:get(join, Opts, []),
+    {CbMod, CbArgs} = case maps:get(callback, Opts, {paxoid_cb_mem, #{}}) of
+        {CM, CA} -> {CM, CA};
+        CM       -> {CM, #{}}
+    end,
+    case CbMod:init(CbArgs) of
+        {ok, Max, CbSt} ->
+            State = #state{
+                name    = Name,
+                node    = Node,
+                mode    = discovering,
+                reqs    = [],
+                cb_mod  = CbMod,
+                cb_st   = CbSt,
+                known   = Known = lists:usort([Node | Nodes]),
+                seen    = #{Node => Now},
+                part    = [Node],
+                min     = Max,
+                max     = Max,
+                retry   = ?DEFAULT_RETRY,
+                steps   = #{},
+                joining = #{},
+                dup_ids = []
+            },
+            ok = ?MODULE:sync_info(Name, Node, Known, Max, 1),
+            _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
+            NewState = phase_start_discovering(State),
+            {ok, NewState}
+    end.
 
 
 %%
@@ -221,18 +329,34 @@ handle_call({next_id, Timeout}, From, State = #state{mode = Mode}) ->
     {noreply, NewState};
 
 
-handle_call({info}, _From, State = #state{mode = Mode, known = Known, seen = Seen, part = Part, ids = Ids, min = Min, max = Max}) ->
-    Info = #{
-        mode      => Mode,
-        offline   => Known -- maps:keys(Seen),
-        joining   => join_pending(State),
-        partition => Part,
-        ids       => Ids,
-        min       => Min,
-        max       => Max
-    },
-    {reply, Info, State};
-
+handle_call({info}, _From, State) ->
+    #state{
+        mode   = Mode,
+        cb_mod = CbMod,
+        cb_st  = CbSt,
+        known  = Known,
+        seen   = Seen,
+        part   = Part,
+        min    = Min,
+        max    = Max
+    } = State,
+    case CbMod:describe(CbSt) of
+        {ok, CbInfo, NewCbSt} ->
+            Info = maps:merge(CbInfo, #{
+                mode      => Mode,
+                offline   => Known -- maps:keys(Seen),
+                joining   => join_pending(State),
+                partition => Part,
+                min       => Min,
+                max       => Max
+            }),
+            NewState = State#state{
+                cb_st = NewCbSt
+            },
+            {reply, {ok, Info}, NewState};
+        {error, Reason} ->
+            {reply, {error, Reason}, State}
+    end;
 
 handle_call(Unknown, _From, State) ->
     {reply, {error, {unexpected_call, Unknown}}, State}.
@@ -360,10 +484,11 @@ handle_cast({step_accept, StepNum, Proposal = {Round, _Value}, Partition}, State
 
 handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, Partition}, State) ->
     #state{
-        node  = Node,
-        max   = Max,
-        ids   = Ids,
-        steps = Steps
+        node   = ThisNode,
+        cb_mod = CbMod,
+        cb_st  = CbSt,
+        max    = Max,
+        steps  = Steps
     } = State,
     Step = #step{
         purpose     = Purpose,
@@ -377,35 +502,59 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
         partition = NewPartition,
         l_vals    = NewLearnedValues
     },
+    NewMax = erlang:max(Max, StepNum),
     NewState = case length(NewAccepted) * 2 > length(NewPartition) of
         true ->
             case {Value, Purpose} of
-                {Node, _} ->
-                    % Have a number assigned to our node, lets use it.
-                    TmpState = State#state{
-                        ids   = lists:usort([StepNum | Ids]),
-                        max   = erlang:max(Max, StepNum),
-                        steps = Steps#{StepNum => NewStep#step{purpose = undefined, ref = chosen}}
-                    },
-                    case Purpose of
-                        undefined       -> TmpState;
-                        {reply, Caller} -> gen_server:reply(Caller, StepNum), TmpState;
-                        {join,  DupId}  -> join_sync_id_allocated(DupId, StepNum, TmpState)
-                    end;
-                {_, undefined} ->
-                    % The step was initiated by other node, so we
-                    % just update our max value.
+                {ThisNode, undefined} ->
+                    % This step was already processed.
                     State#state{
-                        max   = erlang:max(Max, StepNum),
+                        max   = NewMax,
                         steps = Steps#{StepNum => NewStep}
                     };
-                {_, _} ->
+                {ThisNode, {reply, Caller}} ->
+                    % Have a number assigned to our node, lets use it.
+                    {ok, NewCbSt} = CbMod:handle_new_id(StepNum, CbSt),
+                    _ = gen_server:reply(Caller, StepNum),
+                    State#state{
+                        cb_st = NewCbSt,
+                        max   = NewMax,
+                        steps = Steps#{StepNum => NewStep#step{purpose = undefined, ref = chosen}}
+                    };
+                {ThisNode, {join,  DupId}} ->
+                    % Have a number assigned to our node, lets use it.
+                    % The purpose was to use the ID to replace a conflicted one.
+                    {ok, NewCbSt} = CbMod:handle_new_map(DupId, StepNum, CbSt),
+                    TmpState = State#state{
+                        cb_st = NewCbSt,
+                        max   = NewMax,
+                        steps = Steps#{StepNum => NewStep#step{purpose = undefined, ref = chosen}}
+                    },
+                    join_sync_id_allocated(DupId, StepNum, TmpState);
+                {OtherNode, undefined} when OtherNode =/= ThisNode ->
+                    % The step was initiated by other node, so we
+                    % just update our max value.
+                    {ok, NewCbSt} = case NewMax of
+                        Max -> {ok, CbSt};
+                        _   -> CbMod:handle_new_max(NewMax, CbSt)
+                    end,
+                    State#state{
+                        cb_st = NewCbSt,
+                        max   = NewMax,
+                        steps = Steps#{StepNum => NewStep}
+                    };
+                {OtherNode, _}  when OtherNode =/= ThisNode ->
                     % The step was initiated by this node, so we need to
                     % attempt to get new step allocated to this node.
                     % Do not mark this step for archiving, because we are
                     % not the only proposer.
+                    {ok, NewCbSt} = case NewMax of
+                        Max -> {ok, CbSt};
+                        _   -> CbMod:handle_new_max(NewMax, CbSt)
+                    end,
                     TmpState = State#state{
-                        max = erlang:max(Max, StepNum)
+                        cb_st = NewCbSt,
+                        max   = NewMax
                     },
                     step_do_next_attempt(StepNum, TmpState)
             end;
@@ -416,8 +565,8 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
     end,
     {noreply, NewState};
 
-handle_cast({join_sync_req, PeerNode, From, Till, MaxSize}, State) ->
-    NewState = join_sync_req(PeerNode, From, Till, MaxSize, State),
+handle_cast({join_sync_req, PeerNode, From, Till, MaxCount}, State) ->
+    NewState = join_sync_req(PeerNode, From, Till, MaxCount, State),
     {noreply, NewState};
 
 handle_cast({join_sync_res, PeerNode, From, Till, PeerIds}, State) ->
@@ -822,8 +971,8 @@ join_attempt(PeerNode, Ref, State = #state{name = Name, node = ThisNode, joining
                     error_logger:info_msg("Joining ~p - completed.~n", [PeerNode]),
                     join_finalize(PeerNode, State);
                 dup_ids ->
-                    % Just wait for ids to be allocated.
-                    error_logger:info_msg("Joining ~p - check completed, waiting for new ids to be allocated.~n", [PeerNode]),
+                    % Just wait for IDs to be allocated.
+                    error_logger:info_msg("Joining ~p - check completed, waiting for new IDs to be allocated.~n", [PeerNode]),
                     State;
                 checking ->
                     error_logger:info_msg("Joining ~p - check is ongoing.~n", [PeerNode]),
@@ -840,31 +989,29 @@ join_attempt(PeerNode, Ref, State = #state{name = Name, node = ThisNode, joining
 %%  This query can be implemented in some much more efficient way,
 %%  maybe via callback, a database query, etc.
 %%
-join_sync_req(PeerNode, From, Till, MaxSize, State = #state{name = Name, node = ThisNode, ids = Ids}) ->
-    SelectIds = fun
-        SelectIds([Id | Other], Count, AccIds) ->
-            if  Count =< 0 -> {hd(AccIds), lists:reverse(AccIds)};       % Overflow by size.
-                Id > Till  -> {Till, lists:reverse(AccIds)};             % Range scanned.
-                Id < From  -> SelectIds(Other, Count, AccIds);           % Skip the first ids.
-                true       -> SelectIds(Other, Count - 1, [Id | AccIds]) % Collect them.
-            end;
-        SelectIds([], _Count, AccIds) ->
-            {Till, lists:reverse(AccIds)}
-    end,
-    {ResTill, ResIds} = SelectIds(lists:usort(Ids), MaxSize, []),
+join_sync_req(PeerNode, From, Till, MaxCount, State = #state{name = Name, node = ThisNode, cb_mod = CbMod, cb_st = CbSt}) ->
+    {ok, ResTill, ResIds, NewCbSt} = CbMod:handle_select(From, Till, MaxCount, CbSt),
     gen_server:cast({Name, PeerNode}, {join_sync_res, ThisNode, From, ResTill, ResIds}),
-    State.
+    State#state{
+        cb_st = NewCbSt
+    }.
 
 
 %%  @private
 %%  Handle response to the `join_sync_req'.
 %%
-join_sync_res(PeerNode, From, Till, PeerIds, State = #state{max = Max, ids = Ids, steps = Steps, joining = Joining, dup_ids = DupIds}) ->
+join_sync_res(PeerNode, From, Till, PeerIds, State) ->
+    #state{
+        cb_mod  = CbMod,
+        cb_st   = CbSt,
+        max     = Max,
+        steps   = Steps,
+        joining = Joining,
+        dup_ids = DupIds
+    } = State,
     %
-    % Collect the duplicated ids (and ongoing steps).
-    DuplicatedIds = lists:filter(fun (Id) ->
-        lists:member(Id, Ids)
-    end, PeerIds),
+    % Collect the duplicated ids (and ongoing steps)
+    {ok, DuplicatedIds, NewCbSt} = CbMod:handle_check(PeerIds, CbSt),
     DuplicatedSteps = lists:filter(fun (Id) ->
         case Steps of
             #{Id := #step{purpose = Purpose}} ->
@@ -880,7 +1027,7 @@ join_sync_res(PeerNode, From, Till, PeerIds, State = #state{max = Max, ids = Ids
             true  -> AccState; % Only start the allocation on the first detection.
             false -> step_do_initialize({join, Id}, ?DEFAULT_TIMEOUT, AccState)
         end
-    end, State, DuplicatedIds),
+    end, State#state{cb_st = NewCbSt}, DuplicatedIds),
     %
     % Retry allocation of steps, that will be duplicated.
     TmpStateDupSteps = lists:foldl(fun (Id, AccState) ->
@@ -911,9 +1058,8 @@ join_sync_res(PeerNode, From, Till, PeerIds, State = #state{max = Max, ids = Ids
 %%  @private
 %%  New ID was chosen to replace a duplicated ID.
 %%
-join_sync_id_allocated(DupId, NewId, State = #state{map = Map, dup_ids = DupIds, joining = Joining}) ->
+join_sync_id_allocated(DupId, _NewId, State = #state{dup_ids = DupIds, joining = Joining}) ->
     TmpState = State#state{
-        map     = Map#{DupId => NewId},
         dup_ids = lists:delete(DupId, DupIds)
     },
     lists:foldl(fun (PeerNode, AccState = #state{joining = AccJoining}) ->

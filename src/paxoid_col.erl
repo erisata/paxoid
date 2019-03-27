@@ -41,8 +41,8 @@ start_link() ->
 start_child(Name) ->
     start_child(Name, []).
 
-start_child(Name, Nodes) ->
-    supervisor:start_child(?MODULE, paxoid:start_spec(Name, Nodes)).
+start_child(Name, Opts) ->
+    supervisor:start_child(?MODULE, paxoid:start_spec(Name, Opts)).
 
 
 
@@ -66,10 +66,10 @@ init([]) ->
 %%
 %%
 %%
-child_spec(Name) when is_atom(Name) ->
-    paxoid:start_spec(Name, []);
+child_spec({Name, Opts}) when is_atom(Name), is_map(Opts) ->
+    paxoid:start_spec(Name, Opts);
 
-child_spec({Name, Nodes}) when is_atom(Name), is_list(Nodes) ->
-    paxoid:start_spec(Name, Nodes).
+child_spec(Name) when is_atom(Name) ->
+    paxoid:start_spec(Name, #{}).
 
 

@@ -108,7 +108,7 @@ do_next_id_seq(Name, Count) ->
 %%
 test_simple(Config) ->
     Nodes = proplists:get_value(started_nodes, Config),
-    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Nodes]),
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, #{join => Nodes}]),
     {Ids,                         []} = rpc:multicall(Nodes, paxoid, next_id,   [?FUNCTION_NAME]),
     [1, 2, 3] = lists:sort(Ids),
     ok.
@@ -120,7 +120,7 @@ test_simple(Config) ->
 test_burst(Config) ->
     Count = 2000,
     Nodes = proplists:get_value(started_nodes, Config),
-    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Nodes]),
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, #{join => Nodes}]),
     {Ids,                         []} = rpc:multicall(Nodes, ?MODULE, do_next_id_seq, [?FUNCTION_NAME, Count]),
     ct:pal("IDS: ~p~n", [Ids]),
     ExpectedIds = lists:seq(1, Count * 3),
@@ -135,7 +135,7 @@ test_join(Config) ->
     [NodeA | _] = Nodes = proplists:get_value(started_nodes, Config),
     %
     % Start nodes in a disconnected mode (3 separate clusters of 1 node).
-    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, []]),
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME]),
     {[ok,      ok,      ok     ], []} = rpc:multicall(Nodes, paxoid, start,     [?FUNCTION_NAME]),
     {Ids,                         []} = rpc:multicall(Nodes, ?MODULE, do_next_id_seq, [?FUNCTION_NAME, 3]),
     9         = length(lists:append(Ids)),      % We should have 9 ids in total.
@@ -145,7 +145,7 @@ test_join(Config) ->
     ok = rpc:call(NodeA, paxoid, join, [?FUNCTION_NAME, Nodes]),
     WaitForJoin = fun WaitForJoin() ->
         {Infos, []} = rpc:multicall(Nodes, paxoid, info, [?FUNCTION_NAME]),
-        AllMerged = fun (#{partition := Partition}) ->
+        AllMerged = fun ({ok, #{partition := Partition}}) ->
             [] =:= Nodes -- Partition
         end,
         case lists:all(AllMerged, Infos) of
@@ -156,8 +156,9 @@ test_join(Config) ->
     WaitForJoin(),
     %
     % Check, if IDs are unique after the merge.
-    {NewIds, []} = rpc:multicall(Nodes, ?MODULE, do_next_id_seq, [?FUNCTION_NAME, 3]),
-    9 = length(lists:usort(lists:append(NewIds))),
+    {NewInfos, []} = rpc:multicall(Nodes, paxoid, info, [?FUNCTION_NAME]),
+    ct:pal("NewInfos: ~p~n", [NewInfos]),
+    9 = length(lists:usort(lists:append([NewIds || {ok, #{ids := NewIds}} <- NewInfos]))),
     ok.
 
 
