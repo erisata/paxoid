@@ -87,11 +87,11 @@ from a separate node (`rebar3 shell --name x@127.0.0.1`):
 There are to ways to start the paxoid peers:
 
 * _Supervised by the user application._ In this case one can get a supervisor's
-    child specification by calling [`paxoid:start_spec/2`](http://github.com/erisata/paxoid/blob/master/doc/paxoid.md#start_spec-2) and then pass
+    child specification by calling [`paxoid:start_spec/2`](paxoid.md#start_spec-2) and then pass
 it to the corresponding application supervisor.
 Most likely this is the preferred way.
 
-* _Supervised by te `paxoid` application._ For this case one should call [`paxoid:start_sup/2`](http://github.com/erisata/paxoid/blob/master/doc/paxoid.md#start_sup-2).
+* _Supervised by te `paxoid` application._ For this case one should call [`paxoid:start_sup/2`](paxoid.md#start_sup-2).
     The application can also use predefined paxoid peers. They can be configured
     via the `predefined` environment variable of the `paxoid` application.
 
@@ -102,10 +102,10 @@ That's only an initial list, more nodes can be discovered later.
 This can be used to join new node to an existing cluster.
 
 * `callback => module() | {module(), Args :: term()}` -- a callback
-    module implementing the [`paxoid`](http://github.com/erisata/paxoid/blob/master/doc/paxoid.md) behaviour. It can be used to
+    module implementing the [`paxoid`](paxoid.md) behaviour. It can be used to
     implement a custom persistence as well as to get notifications
     on various events (like new mapping for a duplicated ID).
-    You can look at [`paxoid_cb_mem`](http://github.com/erisata/paxoid/blob/master/doc/paxoid_cb_mem.md) for an example of such
+    You can look at [`paxoid_cb_mem`](paxoid_cb_mem.md) for an example of such
 a callback module. This module is used by default.
 
 
@@ -136,7 +136,7 @@ TBD: TLA+ specification.
 
 
 <table width="100%" border="0" summary="list of modules">
-<tr><td><a href="http://github.com/erisata/paxoid/blob/master/doc/paxoid.md" class="module">paxoid</a></td></tr>
-<tr><td><a href="http://github.com/erisata/paxoid/blob/master/doc/paxoid_cb_file.md" class="module">paxoid_cb_file</a></td></tr>
-<tr><td><a href="http://github.com/erisata/paxoid/blob/master/doc/paxoid_cb_mem.md" class="module">paxoid_cb_mem</a></td></tr></table>
+<tr><td><a href="paxoid.md" class="module">paxoid</a></td></tr>
+<tr><td><a href="paxoid_cb_file.md" class="module">paxoid_cb_file</a></td></tr>
+<tr><td><a href="paxoid_cb_mem.md" class="module">paxoid_cb_mem</a></td></tr></table>
 

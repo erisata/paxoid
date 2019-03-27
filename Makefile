@@ -19,5 +19,10 @@ eunit:
 ct:
 	$(REBAR) ct
 
+doc: edoc
+edoc:
+	$(REBAR) as docs edoc
+
+
 .PHONY: all compile clean test itest check eunit ct
 

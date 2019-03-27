@@ -147,6 +147,7 @@
 start_link(Name, Opts) when is_atom(Name), is_map(Opts) ->
     gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
 
+%% @equiv start_link(Name, #{})
 start_link(Name) when is_atom(Name) ->
     start_link(Name, #{}).
 
@@ -157,6 +158,7 @@ start_link(Name) when is_atom(Name) ->
 start_sup(Name, Opts) ->
     paxoid_col:start_child(Name, Opts).
 
+%% @equiv start_sup(Name, #{})
 start_sup(Name) ->
     start_sup(Name, #{}).
 
@@ -171,6 +173,7 @@ start_spec(Name, Opts) ->
         start => {?MODULE, start_link, [Name, Opts]}
     }.
 
+%% @equiv start_spec(Name, #{})
 start_spec(Name) ->
     start_spec(Name, #{}).
 
@@ -183,8 +186,8 @@ start(Name) ->
     gen_server:cast(Name, {start}).
 
 
-%%
-%%
+%%  @doc
+%%  Add nodes to a list of known nodes to synchronize with.
 %%
 join(Name, Node) when is_atom(Node) ->
     join(Name, [Node]);
@@ -193,18 +196,19 @@ join(Name, Nodes) when is_list(Nodes) ->
     gen_server:cast(Name, {join, Nodes}).
 
 
+%%  @doc
+%%  Returns next number from the sequence.
 %%
-%%
-%%
-next_id(Name) ->
-    next_id(Name, ?DEFAULT_TIMEOUT).
-
 next_id(Name, Timeout) ->
     gen_server:call(Name, {next_id, Timeout}, Timeout).
 
+%% @equiv next_id(Name, 5000)
+next_id(Name) ->
+    next_id(Name, ?DEFAULT_TIMEOUT).
 
-%%
-%%
+
+%%  @doc
+%%  Returns descriptive information about this node / process.
 %%
 info(Name) ->
     gen_server:call(Name, {info}).
@@ -281,7 +285,7 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
 %%% Callbacks for `gen_server'.
 %%% ============================================================================
 
-%%
+%%  @private
 %%
 %%
 init({Name, Opts}) ->
@@ -318,7 +322,7 @@ init({Name, Opts}) ->
     end.
 
 
-%%
+%%  @private
 %%
 %%
 handle_call({next_id, Timeout}, From, State = #state{mode = Mode}) ->
@@ -362,7 +366,7 @@ handle_call(Unknown, _From, State) ->
     {reply, {error, {unexpected_call, Unknown}}, State}.
 
 
-%%
+%%  @private
 %%
 %%
 handle_cast({start}, State = #state{mode = Mode}) ->
@@ -578,7 +582,7 @@ handle_cast(Unknown, State) ->
     {noreply, State}.
 
 
-%%
+%%  @private
 %%
 %%
 handle_info(init_disc_timeout, State = #state{mode = Mode, node = ThisNode, known = Known}) ->
@@ -653,14 +657,14 @@ handle_info(Unknown, State) ->
     error_logger:warning_msg("Unknown info: ~p~n", [Unknown]),
     {noreply, State}.
 
-%%
+%%  @private
 %%
 %%
 terminate(_Reason, _State) ->
     ok.
 
 
-%%
+%%  @private
 %%
 %%
 code_change(_OldVsn, State, _Extra) ->
@@ -740,7 +744,7 @@ phase_start_ready(State = #state{reqs = Reqs}) ->
 %%% Internal: Paxos API for updating the sequence.
 %%% ============================================================================
 
-%%  @doc
+%%  @private
 %%  Initialize new Paxos consensus for the next free element (step) of the sequence.
 %%  Here the process acts as a proposer.
 %%
@@ -772,7 +776,7 @@ step_do_initialize(Purpose, Timeout, State) ->
     }.
 
 
-%%
+%%  @private
 %%  Gives up on the specified StepNum, and initializes the next one.
 %%
 step_do_next_attempt(StepNum, State = #state{steps = Steps}) ->
@@ -851,7 +855,7 @@ step_do_cleanup(State = #state{min = Min, steps = Steps}) ->
     }.
 
 
-%%  @doc
+%%  @private
 %%  Paxos, phase 1, the `prepare' message.
 %%  Sent from a proposer to all acceptors.
 %%
@@ -860,7 +864,7 @@ step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
     ok.
 
 
-%%  @doc
+%%  @private
 %%  Paxos, phase 1, the `prepared' message.
 %%  Sent from all the acceptors to a proposer.
 %%
@@ -868,7 +872,7 @@ step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
     ok = gen_server:cast({Name, ProposerNode}, {step_prepared, StepNum, Accepted, AcceptorNode, Partition}).
 
 
-%%  @doc
+%%  @private
 %%  Paxos, phase 2, the `accept!' message.
 %%  Sent from a proposer to all acceptors.
 %%
@@ -877,7 +881,7 @@ step_accept(Name, StepNum, Partition, Proposal) ->
     ok.
 
 
-%%  @doc
+%%  @private
 %%  Paxos, phase 2, the `accepted' message.
 %%  Sent from from all acceptors to all the learners.
 %%
@@ -891,7 +895,7 @@ step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode) ->
 %%% Internal: Joining of nodes to the partition.
 %%% ============================================================================
 
-%%  @doc
+%%  @private
 %%  Returns a list of nodes, that are reachable (seen) but
 %%  are not joined to our partition yet.
 %%
@@ -899,7 +903,7 @@ join_pending(#state{seen = Seen, part = Part}) ->
     maps:keys(maps:without(Part, Seen)).
 
 
-%%
+%%  @private
 %%
 %%
 join_start_if_needed(State = #state{joining = Joining}) ->
@@ -913,7 +917,7 @@ join_start_if_needed(State = #state{joining = Joining}) ->
     end, TmpState, Pending -- maps:keys(Joining)).
 
 
-%%
+%%  @private
 %%
 %%
 join_start(ThisNode, State = #state{node = ThisNode}) ->
@@ -933,7 +937,7 @@ join_start(PeerNode, State = #state{max = Max, steps = Steps, joining = Joining}
     join_attempt_next(PeerNode, NewState).
 
 
-%%
+%%  @private
 %%  Join attempt: Schedule the next attempt.
 %%
 join_attempt_next(PeerNode, State = #state{joining = Joining}) ->
@@ -946,7 +950,7 @@ join_attempt_next(PeerNode, State = #state{joining = Joining}) ->
     }.
 
 
-%%
+%%  @private
 %%  Join attempt: Schedule a retry.
 %%
 join_attempt_retry(PeerNode, Ref, State = #state{joining = Joining}) ->
@@ -956,7 +960,7 @@ join_attempt_retry(PeerNode, Ref, State = #state{joining = Joining}) ->
     end.
 
 
-%%
+%%  @private
 %%  Join attempt: Perform single attempt.
 %%
 join_attempt(ThisNode, _Ref, State = #state{node = ThisNode}) ->
@@ -1075,7 +1079,7 @@ join_sync_id_allocated(DupId, _NewId, State = #state{dup_ids = DupIds, joining =
     end, TmpState, maps:keys(Joining)).
 
 
-%%
+%%  @private
 %%
 %%
 join_finalize(PeerNode, State = #state{mode = Mode, part = Part, joining = Joining}) ->
@@ -1094,7 +1098,7 @@ join_finalize(PeerNode, State = #state{mode = Mode, part = Part, joining = Joini
     }.
 
 
-%%  @doc
+%%  @private
 %%  Checks, if the join procedure is completed.
 %%
 join_completed(#join{from = From, till = Till, dup_ids = []}) when From >= Till -> true;
