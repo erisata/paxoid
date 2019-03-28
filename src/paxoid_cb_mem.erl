@@ -23,7 +23,7 @@
 -behaviour(paxoid).
 -export([extract_data/1]).
 -export([
-    init/1,
+    init/3,
     describe/1,
     handle_new_id/2,
     handle_new_map/3,
@@ -62,7 +62,7 @@ extract_data(#state{max = Max, ids = Ids, map = Map}) ->
 %%  @doc
 %%  Initializes this callback.
 %%
-init(Args) ->
+init(_Name, _Node, Args) ->
     Max = maps:get(max, Args, 0),
     Ids = maps:get(ids, Args, []),
     Map = maps:get(map, Args, #{}),

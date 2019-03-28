@@ -52,6 +52,8 @@
 %%
 %%
 -callback init(
+        Name :: atom(),
+        Node :: node(),
         Args :: term()
     ) ->
         {ok, Max :: num(), State :: term()}.
@@ -296,7 +298,7 @@ init({Name, Opts}) ->
         {CM, CA} -> {CM, CA};
         CM       -> {CM, #{}}
     end,
-    case CbMod:init(CbArgs) of
+    case CbMod:init(Name, Node, CbArgs) of
         {ok, Max, CbSt} ->
             State = #state{
                 name    = Name,
@@ -369,10 +371,10 @@ handle_call(Unknown, _From, State) ->
 %%  @private
 %%
 %%
-handle_cast({start}, State = #state{mode = Mode}) ->
+handle_cast({start}, State = #state{name = Name, node = ThisNode, mode = Mode}) ->
     NewState = case Mode of
         discovering ->
-            error_logger:info_msg("Starting node on request, entering the joining mode.~n"),
+            error_logger:info_msg("[paxoid:~s:~s] Starting node on request, entering the joining mode.~n", [Name, ThisNode]),
             phase_start_joining(State);
         _ ->
             State
@@ -401,7 +403,7 @@ handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node
         {discovering, [ThisNode], _} ->
             TmpState;
         {discovering, _, []} ->
-            error_logger:info_msg("Discovery of nodes completed, entering the join phase.~n"),
+            error_logger:info_msg("[paxoid:~s:~s] Discovery of nodes completed, entering the join phase.~n", [Name, ThisNode]),
             phase_start_joining(TmpState);
         {_, _, _} ->
             TmpState
@@ -577,21 +579,21 @@ handle_cast({join_sync_res, PeerNode, From, Till, PeerIds}, State) ->
     NewState = join_sync_res(PeerNode, From, Till, PeerIds, State),
     {noreply, NewState};
 
-handle_cast(Unknown, State) ->
-    error_logger:warning_msg("Unknown cast: ~p~n", [Unknown]),
+handle_cast(Unknown, State = #state{name = Name, node = ThisNode}) ->
+    error_logger:warning_msg("[paxoid:~s:~s] Unknown cast: ~p~n", [Name, ThisNode, Unknown]),
     {noreply, State}.
 
 
 %%  @private
 %%
 %%
-handle_info(init_disc_timeout, State = #state{mode = Mode, node = ThisNode, known = Known}) ->
+handle_info(init_disc_timeout, State = #state{name = Name, mode = Mode, node = ThisNode, known = Known}) ->
     case {Mode, Known} of
         {discovering, [ThisNode]} ->
-            error_logger:info_msg("Discovery of nodes timed out, will wait for user command to start.~n"),
+            error_logger:info_msg("[paxoid:~s:~s] Discovery of nodes timed out, will wait for user command to start.~n", [Name, ThisNode]),
             {noreply, State};
         {discovering, [_|_]} ->
-            error_logger:info_msg("Discovery of nodes timed out, continuing with ~p.~n", [Known]),
+            error_logger:info_msg("[paxoid:~s:~s] Discovery of nodes timed out, continuing with ~p.~n", [Name, ThisNode, Known]),
             NewState = phase_start_joining(State),
             {noreply, NewState};
         {joining, _}->
@@ -600,14 +602,14 @@ handle_info(init_disc_timeout, State = #state{mode = Mode, node = ThisNode, know
             {noreply, State}
     end;
 
-handle_info(init_join_timeout, State = #state{mode = Mode, joining = Joining}) ->
+handle_info(init_join_timeout, State = #state{name = Name, mode = Mode, node = ThisNode, joining = Joining}) ->
     case Mode of
         discovering ->
-            error_logger:warning_msg("Join timeout in the discovering mode, something wrong.~n"),
+            error_logger:warning_msg("[paxoid:~s:~s] Join timeout in the discovering mode, something wrong.~n", [Name, ThisNode]),
             NewState = phase_start_ready(State),
             {noreply, NewState};
         joining ->
-            error_logger:warning_msg("Join timed out, going to the ready mode while joining=~p.~n", [maps:keys(Joining)]),
+            error_logger:warning_msg("[paxoid:~s:~s] Join timed out, going to the ready mode while joining=~p.~n", [Name, ThisNode, maps:keys(Joining)]),
             NewState = phase_start_ready(State),
             {noreply, NewState};
         ready ->
@@ -653,8 +655,8 @@ handle_info({join_attempt, PeerNode, Ref}, State) ->
     NewState = join_attempt(PeerNode, Ref, State),
     {noreply, NewState};
 
-handle_info(Unknown, State) ->
-    error_logger:warning_msg("Unknown info: ~p~n", [Unknown]),
+handle_info(Unknown, State = #state{name = Name, node = ThisNode}) ->
+    error_logger:warning_msg("[paxoid:~s:~s] Unknown info: ~p~n", [Name, ThisNode, Unknown]),
     {noreply, State}.
 
 %%  @private
@@ -689,12 +691,12 @@ phase_enqueue_request(ReplyTo, Timeout, State = #state{reqs = Reqs}) ->
 %%  @private
 %%
 %%
-phase_start_discovering(State = #state{node = ThisNode, known = Known}) ->
+phase_start_discovering(State = #state{name = Name, node = ThisNode, known = Known}) ->
     case Known of
         [ThisNode] ->
-            error_logger:info_msg("This node is started as standalone, will wait for explicit start event.~n");
+            error_logger:info_msg("[paxoid:~s:~s] This node is started as standalone, will wait for explicit start event.~n", [Name, ThisNode]);
         [_|_] ->
-            error_logger:info_msg("Starting the discovery phase, known hosts: ~p.~n", [Known]),
+            error_logger:info_msg("[paxoid:~s:~s] Starting the discovery phase, known hosts: ~p.~n", [Name, ThisNode, Known]),
             _ = erlang:send_after(?INIT_DISC_TIMEOUT, self(), init_disc_timeout)
     end,
     State#state{
@@ -705,10 +707,10 @@ phase_start_discovering(State = #state{node = ThisNode, known = Known}) ->
 %%  @private
 %%
 %%
-phase_start_joining(State = #state{joining = Joining}) ->
+phase_start_joining(State = #state{name = Name, node = ThisNode, joining = Joining}) ->
     case maps:size(Joining) of
         0 ->
-            error_logger:info_msg("There is no hosts to join with, entering the ready mode.~n"),
+            error_logger:info_msg("[paxoid:~s:~s] There is no hosts to join with, entering the ready mode.~n", [Name, ThisNode]),
             phase_start_ready(State);
         _ ->
             _ = erlang:send_after(?INIT_JOIN_TIMEOUT, self(), init_join_timeout),
@@ -721,7 +723,7 @@ phase_start_joining(State = #state{joining = Joining}) ->
 %%  @private
 %%
 %%
-phase_start_ready(State = #state{reqs = Reqs}) ->
+phase_start_ready(State = #state{name = Name, node = ThisNode, reqs = Reqs}) ->
     Now = erlang:system_time(millisecond),
     TmpState = State#state{
         mode = ready,
@@ -733,7 +735,7 @@ phase_start_ready(State = #state{reqs = Reqs}) ->
             true ->
                 step_do_initialize({reply, ReplyTo}, Timeout, AccState);
             false ->
-                error_logger:warning_msg("Droppig next_id request from ~p, expired ~pms ago.~n", [ReplyTo, -Timeout]),
+                error_logger:warning_msg("[paxoid:~s:~s] Droppig next_id request from ~p, expired ~pms ago.~n", [Name, ThisNode, ReplyTo, -Timeout]),
                 AccState
         end
     end, TmpState, Reqs).
@@ -972,14 +974,14 @@ join_attempt(PeerNode, Ref, State = #state{name = Name, node = ThisNode, joining
         #{PeerNode := Join = #join{ref = Ref, from = From, till = Till}} ->
             case join_completed(Join) of
                 true ->
-                    error_logger:info_msg("Joining ~p - completed.~n", [PeerNode]),
+                    error_logger:info_msg("[paxoid:~s:~s] Joining ~p - completed.~n", [Name, ThisNode, PeerNode]),
                     join_finalize(PeerNode, State);
                 dup_ids ->
                     % Just wait for IDs to be allocated.
-                    error_logger:info_msg("Joining ~p - check completed, waiting for new IDs to be allocated.~n", [PeerNode]),
+                    error_logger:info_msg("[paxoid:~s:~s] Joining ~p - check completed, waiting for new IDs to be allocated.~n", [Name, ThisNode, PeerNode]),
                     State;
                 checking ->
-                    error_logger:info_msg("Joining ~p - check is ongoing.~n", [PeerNode]),
+                    error_logger:info_msg("[paxoid:~s:~s] Joining ~p - check is ongoing.~n", [Name, ThisNode, PeerNode]),
                     gen_server:cast({Name, PeerNode}, {join_sync_req, ThisNode, From, Till, ?MAX_JOIN_SYNC_SIZE}),
                     State
             end;
@@ -1082,12 +1084,12 @@ join_sync_id_allocated(DupId, _NewId, State = #state{dup_ids = DupIds, joining =
 %%  @private
 %%
 %%
-join_finalize(PeerNode, State = #state{mode = Mode, part = Part, joining = Joining}) ->
+join_finalize(PeerNode, State = #state{name = Name, node = ThisNode, mode = Mode, part = Part, joining = Joining}) ->
     NewPart    = lists:usort([PeerNode | Part]),
     NewJoining = maps:remove(PeerNode, Joining),
     TmpState = case {Mode, maps:size(NewJoining)} of
         {joining, 0} ->
-            error_logger:info_msg("All nodes joined, entering the ready mode.~n"),
+            error_logger:info_msg("[paxoid:~s:~s] All nodes joined, entering the ready mode.~n", [Name, ThisNode]),
             phase_start_ready(State);
         {_, _} ->
             State

@@ -23,7 +23,7 @@
 -module(paxoid_cb_file).
 -behaviour(paxoid).
 -export([
-    init/1,
+    init/3,
     describe/1,
     handle_new_id/2,
     handle_new_map/3,
@@ -54,11 +54,14 @@
 %%  @doc
 %%  Initializes this callback.
 %%
-init(Args) ->
-    Filename = maps:get(filename, Args, "paxoid.db-" ++ erlang:atom_to_list(node())),
+init(Name, Node, Args) ->
+    Filename = maps:get(filename, Args, "paxoid.db-" ++ erlang:atom_to_list(Node)),
     MemArgs = case file:consult(Filename) of
         {ok, Terms} ->
-            error_logger:info_msg("Initial state was read from a local paxoid file=~p~n", [Filename]),
+            error_logger:info_msg(
+                "[paxoid:~s:~s] Initial state was read from a local paxoid file=~p~n",
+                [Name, Node, Filename]
+            ),
             InitIds =            proplists:get_value(ids, Terms, maps:get(ids, Args, [])),
             InitMax = lists:max([proplists:get_value(max, Terms, maps:get(max, Args, 0)) | InitIds]),
             Args#{
@@ -67,10 +70,13 @@ init(Args) ->
                 map => proplists:get_value(map, Terms, maps:get(map, Args, #{}))
             };
         {error, Reason} ->
-            error_logger:warning_msg("Unable to read local paxoid file=~p, reason=~p~n", [Filename, Reason]),
+            error_logger:warning_msg(
+                "[paxoid:~s:~s] Unable to read local paxoid file=~p, reason=~p~n",
+                [Name, Node, Filename, Reason]
+            ),
             Args
     end,
-    {ok, Max, MemState} = paxoid_cb_mem:init(MemArgs),
+    {ok, Max, MemState} = paxoid_cb_mem:init(Name, Node, MemArgs),
     State = #state{
         file = Filename,
         mem  = MemState
