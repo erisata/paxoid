@@ -28,6 +28,8 @@
     handle_new_id/2,
     handle_new_map/3,
     handle_new_max/2,
+    handle_changed_cluster/3,
+    handle_changed_partition/3,
     handle_select/4,
     handle_check/2
 ]).
@@ -62,7 +64,7 @@ extract_data(#state{max = Max, ids = Ids, map = Map}) ->
 %%  @doc
 %%  Initializes this callback.
 %%
-init(_Name, _Node, Args) ->
+init(_Name, Node, Args) ->
     Max = maps:get(max, Args, 0),
     Ids = maps:get(ids, Args, []),
     Map = maps:get(map, Args, #{}),
@@ -71,7 +73,7 @@ init(_Name, _Node, Args) ->
         max = Max,
         map = Map
     },
-    {ok, Max, State}.
+    {ok, Max, [Node], State}.
 
 
 %%
@@ -118,6 +120,19 @@ handle_new_max(NewMax, State) ->
     },
     {ok, NewState}.
 
+
+%%
+%%
+%%
+handle_changed_cluster(_OldNodes, _NewNodes, State) ->
+    {ok, State}.
+
+
+%%
+%%
+%%
+handle_changed_partition(_OldNodes, _NewNodes, State) ->
+    {ok, State}.
 
 
 %%  @doc

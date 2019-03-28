@@ -56,7 +56,11 @@
         Node :: node(),
         Args :: term()
     ) ->
-        {ok, Max :: num(), State :: term()}.
+        {ok,
+            Max         :: num(),
+            KnownNodes  :: [node()],
+            State       :: term()
+        }.
 
 
 %%
@@ -98,6 +102,28 @@
 -callback handle_new_max(
         NewMax :: num(),
         State :: term()
+    ) ->
+        {ok, NewState :: term()}.
+
+
+%%
+%%
+%%
+-callback handle_changed_cluster(
+        OldNodes    :: [node()],
+        NewNodes    :: [node()],
+        State       :: term()
+    ) ->
+        {ok, NewState :: term()}.
+
+
+%%
+%%
+%%
+-callback handle_changed_partition(
+        OldNodes    :: [node()],
+        NewNodes    :: [node()],
+        State       :: term()
     ) ->
         {ok, NewState :: term()}.
 
@@ -299,7 +325,7 @@ init({Name, Opts}) ->
         CM       -> {CM, #{}}
     end,
     case CbMod:init(Name, Node, CbArgs) of
-        {ok, Max, CbSt} ->
+        {ok, Max, InitNodes, CbSt} ->
             State = #state{
                 name    = Name,
                 node    = Node,
@@ -307,7 +333,7 @@ init({Name, Opts}) ->
                 reqs    = [],
                 cb_mod  = CbMod,
                 cb_st   = CbSt,
-                known   = Known = lists:usort([Node | Nodes]),
+                known   = Known = lists:usort([Node | Nodes] ++ InitNodes),
                 seen    = #{Node => Now},
                 part    = [Node],
                 min     = Max,
@@ -319,7 +345,9 @@ init({Name, Opts}) ->
             },
             ok = ?MODULE:sync_info(Name, Node, Known, Max, 1),
             _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
-            NewState = phase_start_discovering(State),
+            TmpStateC = cb_handle_changed_cluster(InitNodes, State),
+            TmpStateP = cb_handle_changed_partition([], TmpStateC),
+            NewState = phase_start_discovering(TmpStateP),
             {ok, NewState}
     end.
 
@@ -383,9 +411,10 @@ handle_cast({start}, State = #state{name = Name, node = ThisNode, mode = Mode}) 
 
 handle_cast({join, Nodes}, State = #state{name = Name, node = Node, known = Known, max = Max}) ->
     NewKnown = lists:usort(Nodes ++ Known),
-    NewState = State#state{
+    TmpState = State#state{
         known = NewKnown
     },
+    NewState = cb_handle_changed_cluster(Known, TmpState),
     ok = ?MODULE:sync_info(Name, Node, NewKnown, Max, 1),
     {noreply, NewState};
 
@@ -394,11 +423,11 @@ handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node
     NewKnown = lists:usort(Nodes ++ Known),
     NewSeen  = Seen#{Node => Now, ThisNode => Now},
     NewMax   = erlang:max(Max, OldMax),
-    TmpState = join_start_if_needed(State#state{
+    TmpState = join_start_if_needed(cb_handle_changed_cluster(Known, State#state{
         known = NewKnown,
         seen  = NewSeen,
         max   = NewMax
-    }),
+    })),
     NewState = case {Mode, NewKnown, NewKnown -- maps:keys(NewSeen)} of
         {discovering, [ThisNode], _} ->
             TmpState;
@@ -633,10 +662,10 @@ handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Kno
     %
     ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 1),
     _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
-    NewState = State#state{
+    NewState = cb_handle_changed_partition(Part, State#state{
         seen = NewSeen,
         part = NewPart
-    },
+    }),
     {noreply, NewState};
 
 handle_info({step_giveup, StepNum, StepRef}, State) ->
@@ -1094,10 +1123,10 @@ join_finalize(PeerNode, State = #state{name = Name, node = ThisNode, mode = Mode
         {_, _} ->
             State
     end,
-    TmpState#state{
+    cb_handle_changed_partition(Part, TmpState#state{
         part    = NewPart,
         joining = NewJoining
-    }.
+    }).
 
 
 %%  @private
@@ -1106,6 +1135,45 @@ join_finalize(PeerNode, State = #state{name = Name, node = ThisNode, mode = Mode
 join_completed(#join{from = From, till = Till, dup_ids = []}) when From >= Till -> true;
 join_completed(#join{from = From, till = Till              }) when From >= Till -> dup_ids;
 join_completed(#join{                                      })                   -> checking.
+
+
+
+%%% ============================================================================
+%%% Internal: Callback wrappers.
+%%% ============================================================================
+
+%%  @private
+%%  Call the `handle_changed_cluster' callback function if needed.
+%%
+cb_handle_changed_cluster(OldNodes, State = #state{known = KnownNodes, cb_mod = CbMod, cb_st = CbSt}) ->
+    case KnownNodes of
+        OldNodes ->
+            State;
+        _ ->
+            case CbMod:handle_changed_cluster(OldNodes, KnownNodes, CbSt) of
+                {ok, NewCbSt} ->
+                    State#state{
+                        cb_st = NewCbSt
+                    }
+            end
+    end.
+
+
+%%  @private
+%%  Call the `handle_changed_cluster' callback function if needed.
+%%
+cb_handle_changed_partition(OldPart, State = #state{part = Part, cb_mod = CbMod, cb_st = CbSt}) ->
+    case Part of
+        OldPart ->
+            State;
+        _ ->
+            case CbMod:handle_changed_partition(OldPart, Part, CbSt) of
+                {ok, NewCbSt} ->
+                    State#state{
+                        cb_st = NewCbSt
+                    }
+            end
+    end.
 
 
 

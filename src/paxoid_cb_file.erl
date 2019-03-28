@@ -28,6 +28,8 @@
     handle_new_id/2,
     handle_new_map/3,
     handle_new_max/2,
+    handle_changed_cluster/3,
+    handle_changed_partition/3,
     handle_select/4,
     handle_check/2
 ]).
@@ -41,8 +43,9 @@
 %%  The state for this callback module.
 %%
 -record(state, {
-    file :: file:filename(),
-    mem  :: term()
+    file  :: file:filename(),
+    nodes :: [node()],
+    mem   :: term()
 }).
 
 
@@ -55,8 +58,8 @@
 %%  Initializes this callback.
 %%
 init(Name, Node, Args) ->
-    Filename = maps:get(filename, Args, "paxoid.db-" ++ erlang:atom_to_list(Node)),
-    MemArgs = case file:consult(Filename) of
+    Filename = maps:get(filename, Args, lists:flatten(io_lib:format("paxoid-~s-~s.db", [Name, Node]))),
+    {MemArgs, FileNodes} = case file:consult(Filename) of
         {ok, Terms} ->
             error_logger:info_msg(
                 "[paxoid:~s:~s] Initial state was read from a local paxoid file=~p~n",
@@ -64,24 +67,29 @@ init(Name, Node, Args) ->
             ),
             InitIds =            proplists:get_value(ids, Terms, maps:get(ids, Args, [])),
             InitMax = lists:max([proplists:get_value(max, Terms, maps:get(max, Args, 0)) | InitIds]),
-            Args#{
-                max => InitMax,
-                ids => InitIds,
-                map => proplists:get_value(map, Terms, maps:get(map, Args, #{}))
+            {
+                Args#{
+                    max => InitMax,
+                    ids => InitIds,
+                    map => proplists:get_value(map, Terms, maps:get(map, Args, #{}))
+                },
+                proplists:get_value(nodes, Terms, maps:get(nodes, Args, []))
             };
         {error, Reason} ->
             error_logger:warning_msg(
                 "[paxoid:~s:~s] Unable to read local paxoid file=~p, reason=~p~n",
                 [Name, Node, Filename, Reason]
             ),
-            Args
+            {Args, []}
     end,
-    {ok, Max, MemState} = paxoid_cb_mem:init(Name, Node, MemArgs),
+    {ok, Max, MemNodes, MemState} = paxoid_cb_mem:init(Name, Node, MemArgs),
+    KnownNodes = lists:usort(MemNodes ++ FileNodes),
     State = #state{
-        file = Filename,
-        mem  = MemState
+        file  = Filename,
+        nodes = KnownNodes,
+        mem   = MemState
     },
-    {ok, Max, save(State)}.
+    {ok, Max, KnownNodes, save(State)}.
 
 
 %%
@@ -117,6 +125,22 @@ handle_new_max(NewMax, State = #state{mem = MemState}) ->
 
 
 
+%%
+%%
+%%
+handle_changed_cluster(OldNodes, NewNodes, State = #state{mem = MemState}) ->
+    {ok, NewMemState} = paxoid_cb_mem:handle_changed_cluster(OldNodes, NewNodes, MemState),
+    {ok, save(State#state{nodes = NewNodes, mem = NewMemState})}.
+
+
+%%
+%%
+%%
+handle_changed_partition(OldNodes, NewNodes, State = #state{mem = MemState}) ->
+    {ok, NewMemState} = paxoid_cb_mem:handle_changed_partition(OldNodes, NewNodes, MemState),
+    {ok, State#state{mem = NewMemState}}.
+
+
 %%  @doc
 %%  Returns a requested range of IDs owned by this node.
 %%
@@ -141,11 +165,11 @@ handle_check(PeerIds, State = #state{mem = MemState}) ->
 %%
 %%
 %%
-save(State = #state{file = Filename, mem = MemState}) ->
+save(State = #state{file = Filename, nodes = Nodes, mem = MemState}) ->
     {ok, Max, Ids, Map} = paxoid_cb_mem:extract_data(MemState),
     ok = file:write_file(Filename, io_lib:format(
-        "{max, ~p}.~n{ids, ~p}.~n{map, ~p}.~n",
-        [Max, Ids, Map]
+        "{nodes, ~p}.~n{max, ~p}.~n{ids, ~p}.~n{map, ~p}.~n",
+        [Nodes, Max, Ids, Map]
     )),
     State.
 
