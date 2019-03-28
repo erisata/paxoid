@@ -19,7 +19,7 @@
 %%%
 -module(paxoid_app).
 -behaviour(application).
--export([get_env/2]).
+-export([name/0, get_env/2]).
 -export([start/2, stop/1]).
 
 -define(APP, paxoid).
@@ -29,8 +29,15 @@
 %%% Public API.
 %%% ============================================================================
 
+%%  @doc
+%%  Returns name of this application.
 %%
-%%
+name() ->
+    ?APP.
+
+
+%%  @doc
+%%  Retrieved a value of the environment variable for this application.
 %%
 get_env(Name, Default) ->
     application:get_env(?APP, Name, Default).
@@ -41,14 +48,15 @@ get_env(Name, Default) ->
 %%% Callbacks for the application.
 %%% ============================================================================
 
-%%
-%%
+%%  @doc
+%%  Start this application.
 %%
 start(_StartType, _StartArgs) ->
     paxoid_sup:start_link().
 
-%%
-%%
+
+%%  @doc
+%%  Stop this application.
 %%
 stop(_State) ->
     ok.

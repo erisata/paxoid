@@ -6,11 +6,11 @@
 * [Function Index](#index)
 * [Function Details](#functions)
 
-The Paxos based distributed sequence.
+The Paxos based distributed masterless sequence.
 
 __Behaviours:__ [`gen_server`](gen_server.md).
 
-__This module defines the `paxoid` behaviour.__<br /> Required callback functions: `init/3`, `describe/1`, `handle_new_id/2`, `handle_new_map/3`, `handle_new_max/2`, `handle_select/4`, `handle_check/2`.
+__This module defines the `paxoid` behaviour.__<br /> Required callback functions: `init/3`, `describe/1`, `handle_new_id/2`, `handle_new_map/3`, `handle_new_max/2`, `handle_changed_cluster/3`, `handle_changed_partition/3`, `handle_select/4`, `handle_check/2`.
 
 <a name="description"></a>
 
@@ -48,7 +48,8 @@ opts() = #{join =&gt; [node()], callback =&gt; module() | {module(), Args::term(
 <table width="100%" border="1" cellspacing="0" cellpadding="2" summary="function index"><tr><td valign="top"><a href="#info-1">info/1</a></td><td>
 Returns descriptive information about this node / process.</td></tr><tr><td valign="top"><a href="#join-2">join/2</a></td><td>
 Add nodes to a list of known nodes to synchronize with.</td></tr><tr><td valign="top"><a href="#next_id-1">next_id/1</a></td><td>Equivalent to <a href="#next_id-2"><tt>next_id(Name, 5000)</tt></a>.</td></tr><tr><td valign="top"><a href="#next_id-2">next_id/2</a></td><td>
-Returns next number from the sequence.</td></tr><tr><td valign="top"><a href="#start-1">start/1</a></td><td>
+Returns next number from the sequence.</td></tr><tr><td valign="top"><a href="#start-0">start/0</a></td><td>
+A convenience function allowing to start <code>Paxoid</code> from the command line (<code>erl -s paxoid</code>).</td></tr><tr><td valign="top"><a href="#start-1">start/1</a></td><td>
 Start this node even if no peers can be discovered.</td></tr><tr><td valign="top"><a href="#start_link-1">start_link/1</a></td><td>Equivalent to <a href="#start_link-2"><tt>start_link(Name, #{})</tt></a>.</td></tr><tr><td valign="top"><a href="#start_link-2">start_link/2</a></td><td>
 Start a paxoid process/node.</td></tr><tr><td valign="top"><a href="#start_spec-1">start_spec/1</a></td><td>Equivalent to <a href="#start_spec-2"><tt>start_spec(Name, #{})</tt></a>.</td></tr><tr><td valign="top"><a href="#start_spec-2">start_spec/2</a></td><td>
 Produces a supervisor's child specification for starting
@@ -91,6 +92,14 @@ Equivalent to [`next_id(Name, 5000)`](#next_id-2).
 `next_id(Name, Timeout) -> any()`
 
 Returns next number from the sequence.
+
+<a name="start-0"></a>
+
+### start/0 ###
+
+`start() -> any()`
+
+A convenience function allowing to start `Paxoid` from the command line (`erl -s paxoid`).
 
 <a name="start-1"></a>
 

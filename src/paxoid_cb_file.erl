@@ -57,6 +57,8 @@
 %%  @doc
 %%  Initializes this callback.
 %%
+%%  Tries to read all the relevant info from a file.
+%%
 init(Name, Node, Args) ->
     Filename = maps:get(filename, Args, lists:flatten(io_lib:format("paxoid-~s-~s.db", [Name, Node]))),
     {MemArgs, FileNodes} = case file:consult(Filename) of
@@ -92,32 +94,32 @@ init(Name, Node, Args) ->
     {ok, Max, KnownNodes, save(State)}.
 
 
-%%
-%%
+%%  @doc
+%%  Return IDs owned by this node.
 %%
 describe(State = #state{mem = MemState}) ->
     {ok, Info, NewMemState} = paxoid_cb_mem:describe(MemState),
     {ok, Info, State#state{mem = NewMemState}}.
 
 
-%%
-%%
+%%  @doc
+%%  Stores new ID allocated to this node, and upates known maximum, if needed.
 %%
 handle_new_id(NewId, State = #state{mem = MemState}) ->
     {ok, NewMemState} = paxoid_cb_mem:handle_new_id(NewId, MemState),
     {ok, save(State#state{mem = NewMemState})}.
 
 
-%%
-%%
+%%  @doc
+%%  Replaces duplicated ID with new one, and upates known maximum, if needed.
 %%
 handle_new_map(OldId, NewId, State = #state{mem = MemState}) ->
     {ok, NewMemState} = paxoid_cb_mem:handle_new_map(OldId, NewId, MemState),
     {ok, save(State#state{mem = NewMemState})}.
 
 
-%%
-%%
+%%  @doc
+%%  Updates maximal known ID in the scope of the entire cluster.
 %%
 handle_new_max(NewMax, State = #state{mem = MemState}) ->
     {ok, NewMemState} = paxoid_cb_mem:handle_new_max(NewMax, MemState),
@@ -125,16 +127,21 @@ handle_new_max(NewMax, State = #state{mem = MemState}) ->
 
 
 
+%%  @doc
+%%  This function is called, when new nodes are added/discovered in the cluster.
+%%  They can be unreachable yet, but already known.
 %%
-%%
+%%  We will save them to a file to read them again on startup.
 %%
 handle_changed_cluster(OldNodes, NewNodes, State = #state{mem = MemState}) ->
     {ok, NewMemState} = paxoid_cb_mem:handle_changed_cluster(OldNodes, NewNodes, MemState),
     {ok, save(State#state{nodes = NewNodes, mem = NewMemState})}.
 
 
+%%  @doc
+%%  This function is called when our view of the partition has changed.
 %%
-%%
+%%  We do nothing in this case.
 %%
 handle_changed_partition(OldNodes, NewNodes, State = #state{mem = MemState}) ->
     {ok, NewMemState} = paxoid_cb_mem:handle_changed_partition(OldNodes, NewNodes, MemState),
@@ -162,8 +169,8 @@ handle_check(PeerIds, State = #state{mem = MemState}) ->
 %%% Internal functions.
 %%% ============================================================================
 
-%%
-%%
+%%  @private
+%%  Saves the current state to a file.
 %%
 save(State = #state{file = Filename, nodes = Nodes, mem = MemState}) ->
     {ok, Max, Ids, Map} = paxoid_cb_mem:extract_data(MemState),

@@ -15,11 +15,12 @@
 %\--------------------------------------------------------------------
 
 %%% @doc
-%%% The Paxos based distributed sequence.
+%%% The Paxos based distributed masterless sequence.
 %%%
 -module(paxoid).
 -behaviour(gen_server).
 -export([start_link/1, start_link/2, start_sup/1, start_sup/2, start_spec/1, start_spec/2]).
+-export([start/0]).
 -export([start/1, join/2, next_id/1, next_id/2, info/1]).
 -export([sync_info/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -49,7 +50,8 @@
 %%% ============================================================================
 
 %%
-%%
+%%  Initializes the callback state and returns known nodes
+%%  as well as largest known seqnence number.
 %%
 -callback init(
         Name :: atom(),
@@ -64,7 +66,9 @@
 
 
 %%
-%%
+%%  Returns callback-specific descriptive info.
+%%  These are then merged with the info collected by
+%%  the paxoid itself and returned to the caller.
 %%
 -callback describe(
         State :: term()
@@ -76,7 +80,13 @@
 
 
 %%
+%%  This callback is used to notify the user when new ID / Sequence number
+%%  is allocated to this node. This is the same number, that is returned
+%%  to the caller of `next_id/1-2' with the exception that when the `next_id/1-2'
+%%  is timed out, the callback will be notified when the ID will be allocated anyway.
 %%
+%%  This function is not called if the allocated id is used to replace an
+%%  old duplicated ID. See the handle_new_map/3 callback for this case.
 %%
 -callback handle_new_id(
         NewId :: num(),
@@ -86,7 +96,13 @@
 
 
 %%
+%%  This callback is called, when new ID is allocated to replace an existing
+%%  number allocated to this node. This is done in the cases, when conflicts
+%%  are detected when merging partitions. The callback `handle_new_id/2' will
+%%  not be called additionally for this ID.
 %%
+%%  The callback should either store this mapping to use it on data reads,
+%%  or update its set of IDs accordingly.
 %%
 -callback handle_new_map(
         OldId :: num(),
@@ -97,7 +113,12 @@
 
 
 %%
+%%  This callback is used to notify the user that new maximal sequence ID
+%%  becomes known to us. This maximum should be stored and then used at
+%%  startup of the peer.
 %%
+%%  This function is not called, when the new maximum of a sequence is
+%%  allocated to this node. Use `handle_new_id/2' and `handle_new_map/3' for that.
 %%
 -callback handle_new_max(
         NewMax :: num(),
@@ -107,7 +128,8 @@
 
 
 %%
-%%
+%%  This callback is called, when new nodes are added/discovered in the cluster.
+%%  They can be unreachable yet, but already known.
 %%
 -callback handle_changed_cluster(
         OldNodes    :: [node()],
@@ -118,7 +140,7 @@
 
 
 %%
-%%
+%%  This callback is called when our view of the partition has changed.
 %%
 -callback handle_changed_partition(
         OldNodes    :: [node()],
@@ -129,7 +151,10 @@
 
 
 %%
+%%  This callback is used when merging partitions.
+%%  It is used to retrieve a range of IDs allocated to this node.
 %%
+%%  A paging of results is implemented by returning ResTill < Till.
 %%
 -callback handle_select(
         From     :: num(),
@@ -145,7 +170,9 @@
 
 
 %%
-%%
+%%  This callback is used when merging partitions.
+%%  It should compare the provided IDs with IDs owned by this
+%%  node and return a list of conflicting identifiers.
 %%
 -callback handle_check(
         PeerIds :: [num()],
@@ -208,6 +235,13 @@ start_spec(Name) ->
 
 
 %%  @doc
+%%  A convenience function allowing to start `Paxoid' from the command line (`erl -s paxoid').
+%%
+start() ->
+    application:ensure_all_started(paxoid_app:name(), permanent).
+
+
+%%  @doc
 %%  Start this node even if no peers can be discovered.
 %%
 start(Name) ->
@@ -249,7 +283,7 @@ info(Name) ->
 %%% ============================================================================
 
 %%  @private
-%%  ...
+%%  Send a synchronization message to all the specified nodes.
 %%
 sync_info(Name, Node, Nodes, Max, TTL) ->
     _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL}),
@@ -402,7 +436,10 @@ handle_call(Unknown, _From, State) ->
 handle_cast({start}, State = #state{name = Name, node = ThisNode, mode = Mode}) ->
     NewState = case Mode of
         discovering ->
-            error_logger:info_msg("[paxoid:~s:~s] Starting node on request, entering the joining mode.~n", [Name, ThisNode]),
+            error_logger:info_msg(
+                "[paxoid:~s:~s] Starting node on request, entering the joining mode.~n",
+                [Name, ThisNode]
+            ),
             phase_start_joining(State);
         _ ->
             State
@@ -432,7 +469,10 @@ handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node
         {discovering, [ThisNode], _} ->
             TmpState;
         {discovering, _, []} ->
-            error_logger:info_msg("[paxoid:~s:~s] Discovery of nodes completed, entering the join phase.~n", [Name, ThisNode]),
+            error_logger:info_msg(
+                "[paxoid:~s:~s] Discovery of nodes completed, entering the join phase.~n",
+                [Name, ThisNode]
+            ),
             phase_start_joining(TmpState);
         {_, _, _} ->
             TmpState
@@ -619,10 +659,16 @@ handle_cast(Unknown, State = #state{name = Name, node = ThisNode}) ->
 handle_info(init_disc_timeout, State = #state{name = Name, mode = Mode, node = ThisNode, known = Known}) ->
     case {Mode, Known} of
         {discovering, [ThisNode]} ->
-            error_logger:info_msg("[paxoid:~s:~s] Discovery of nodes timed out, will wait for user command to start.~n", [Name, ThisNode]),
+            error_logger:info_msg(
+                "[paxoid:~s:~s] Discovery of nodes timed out, will wait for user command to start.~n",
+                [Name, ThisNode]
+            ),
             {noreply, State};
         {discovering, [_|_]} ->
-            error_logger:info_msg("[paxoid:~s:~s] Discovery of nodes timed out, continuing with ~p.~n", [Name, ThisNode, Known]),
+            error_logger:info_msg(
+                "[paxoid:~s:~s] Discovery of nodes timed out, continuing with ~p.~n",
+                [Name, ThisNode, Known]
+            ),
             NewState = phase_start_joining(State),
             {noreply, NewState};
         {joining, _}->
@@ -634,11 +680,17 @@ handle_info(init_disc_timeout, State = #state{name = Name, mode = Mode, node = T
 handle_info(init_join_timeout, State = #state{name = Name, mode = Mode, node = ThisNode, joining = Joining}) ->
     case Mode of
         discovering ->
-            error_logger:warning_msg("[paxoid:~s:~s] Join timeout in the discovering mode, something wrong.~n", [Name, ThisNode]),
+            error_logger:warning_msg(
+                "[paxoid:~s:~s] Join timeout in the discovering mode, something wrong.~n",
+                [Name, ThisNode]
+            ),
             NewState = phase_start_ready(State),
             {noreply, NewState};
         joining ->
-            error_logger:warning_msg("[paxoid:~s:~s] Join timed out, going to the ready mode while joining=~p.~n", [Name, ThisNode, maps:keys(Joining)]),
+            error_logger:warning_msg(
+                "[paxoid:~s:~s] Join timed out, going to the ready mode while joining=~p.~n",
+                [Name, ThisNode, maps:keys(Joining)]
+            ),
             NewState = phase_start_ready(State),
             {noreply, NewState};
         ready ->
@@ -688,6 +740,7 @@ handle_info(Unknown, State = #state{name = Name, node = ThisNode}) ->
     error_logger:warning_msg("[paxoid:~s:~s] Unknown info: ~p~n", [Name, ThisNode, Unknown]),
     {noreply, State}.
 
+
 %%  @private
 %%
 %%
@@ -723,9 +776,15 @@ phase_enqueue_request(ReplyTo, Timeout, State = #state{reqs = Reqs}) ->
 phase_start_discovering(State = #state{name = Name, node = ThisNode, known = Known}) ->
     case Known of
         [ThisNode] ->
-            error_logger:info_msg("[paxoid:~s:~s] This node is started as standalone, will wait for explicit start event.~n", [Name, ThisNode]);
+            error_logger:info_msg(
+                "[paxoid:~s:~s] This node is started as standalone, will wait for explicit start event.~n",
+                [Name, ThisNode]
+            );
         [_|_] ->
-            error_logger:info_msg("[paxoid:~s:~s] Starting the discovery phase, known hosts: ~p.~n", [Name, ThisNode, Known]),
+            error_logger:info_msg(
+                "[paxoid:~s:~s] Starting the discovery phase, known hosts: ~p.~n",
+                [Name, ThisNode, Known]
+            ),
             _ = erlang:send_after(?INIT_DISC_TIMEOUT, self(), init_disc_timeout)
     end,
     State#state{
@@ -739,7 +798,10 @@ phase_start_discovering(State = #state{name = Name, node = ThisNode, known = Kno
 phase_start_joining(State = #state{name = Name, node = ThisNode, joining = Joining}) ->
     case maps:size(Joining) of
         0 ->
-            error_logger:info_msg("[paxoid:~s:~s] There is no hosts to join with, entering the ready mode.~n", [Name, ThisNode]),
+            error_logger:info_msg(
+                "[paxoid:~s:~s] There is no hosts to join with, entering the ready mode.~n",
+                [Name, ThisNode]
+            ),
             phase_start_ready(State);
         _ ->
             _ = erlang:send_after(?INIT_JOIN_TIMEOUT, self(), init_join_timeout),
@@ -764,7 +826,10 @@ phase_start_ready(State = #state{name = Name, node = ThisNode, reqs = Reqs}) ->
             true ->
                 step_do_initialize({reply, ReplyTo}, Timeout, AccState);
             false ->
-                error_logger:warning_msg("[paxoid:~s:~s] Droppig next_id request from ~p, expired ~pms ago.~n", [Name, ThisNode, ReplyTo, -Timeout]),
+                error_logger:warning_msg(
+                    "[paxoid:~s:~s] Droppig next_id request from ~p, expired ~pms ago.~n",
+                    [Name, ThisNode, ReplyTo, -Timeout]
+                ),
                 AccState
         end
     end, TmpState, Reqs).
@@ -1003,14 +1068,23 @@ join_attempt(PeerNode, Ref, State = #state{name = Name, node = ThisNode, joining
         #{PeerNode := Join = #join{ref = Ref, from = From, till = Till}} ->
             case join_completed(Join) of
                 true ->
-                    error_logger:info_msg("[paxoid:~s:~s] Joining ~p - completed.~n", [Name, ThisNode, PeerNode]),
+                    error_logger:info_msg(
+                        "[paxoid:~s:~s] Joining ~p - completed.~n",
+                        [Name, ThisNode, PeerNode]
+                    ),
                     join_finalize(PeerNode, State);
                 dup_ids ->
                     % Just wait for IDs to be allocated.
-                    error_logger:info_msg("[paxoid:~s:~s] Joining ~p - check completed, waiting for new IDs to be allocated.~n", [Name, ThisNode, PeerNode]),
+                    error_logger:info_msg(
+                        "[paxoid:~s:~s] Joining ~p - check completed, waiting for new IDs to be allocated.~n",
+                        [Name, ThisNode, PeerNode]
+                    ),
                     State;
                 checking ->
-                    error_logger:info_msg("[paxoid:~s:~s] Joining ~p - check is ongoing.~n", [Name, ThisNode, PeerNode]),
+                    error_logger:info_msg(
+                        "[paxoid:~s:~s] Joining ~p - check is ongoing.~n",
+                        [Name, ThisNode, PeerNode]
+                    ),
                     gen_server:cast({Name, PeerNode}, {join_sync_req, ThisNode, From, Till, ?MAX_JOIN_SYNC_SIZE}),
                     State
             end;
@@ -1111,7 +1185,7 @@ join_sync_id_allocated(DupId, _NewId, State = #state{dup_ids = DupIds, joining =
 
 
 %%  @private
-%%
+%%  Join completed for the specified peer node, so mark it accordingly.
 %%
 join_finalize(PeerNode, State = #state{name = Name, node = ThisNode, mode = Mode, part = Part, joining = Joining}) ->
     NewPart    = lists:usort([PeerNode | Part]),

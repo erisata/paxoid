@@ -199,8 +199,8 @@ test_file(Config) ->
     ok = stop_nodes(Nodes),
     {ok, Nodes} = start_nodes(Config),
     %
-    % Produce some more ids.
-    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Opts]),
+    % Produce some more ids, use known nodes from a file..
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Opts#{join => []}]),
     {NewIds,                      []} = rpc:multicall(Nodes, paxoid, next_id,   [?FUNCTION_NAME]),
     [4, 5, 6] = lists:sort(NewIds),
     %

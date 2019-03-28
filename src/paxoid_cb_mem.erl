@@ -76,16 +76,16 @@ init(_Name, Node, Args) ->
     {ok, Max, [Node], State}.
 
 
-%%
-%%
+%%  @doc
+%%  Return IDs owned by this node.
 %%
 describe(State = #state{ids = Ids}) ->
     Info = #{ids => Ids},
     {ok, Info, State}.
 
 
-%%
-%%
+%%  @doc
+%%  Stores new ID allocated to this node, and upates known maximum, if needed.
 %%
 handle_new_id(NewId, State = #state{max = Max, ids = Ids}) ->
     NewState = State#state{
@@ -95,8 +95,8 @@ handle_new_id(NewId, State = #state{max = Max, ids = Ids}) ->
     {ok, NewState}.
 
 
-%%
-%%
+%%  @doc
+%%  Replaces duplicated ID with new one, and upates known maximum, if needed.
 %%
 handle_new_map(OldId, NewId, State = #state{max = Max, ids = Ids, map = Map}) ->
     MapId = fun
@@ -111,8 +111,8 @@ handle_new_map(OldId, NewId, State = #state{max = Max, ids = Ids, map = Map}) ->
     {ok, NewState}.
 
 
-%%
-%%
+%%  @doc
+%%  Updates maximal known ID in the scope of the entire cluster.
 %%
 handle_new_max(NewMax, State) ->
     NewState = State#state{
@@ -121,15 +121,20 @@ handle_new_max(NewMax, State) ->
     {ok, NewState}.
 
 
+%%  @doc
+%%  This function is called, when new nodes are added/discovered in the cluster.
+%%  They can be unreachable yet, but already known.
 %%
-%%
+%%  We do nothing in this case.
 %%
 handle_changed_cluster(_OldNodes, _NewNodes, State) ->
     {ok, State}.
 
 
+%%  @doc
+%%  This function is called when our view of the partition has changed.
 %%
-%%
+%%  We do nothing in this case.
 %%
 handle_changed_partition(_OldNodes, _NewNodes, State) ->
     {ok, State}.

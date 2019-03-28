@@ -24,5 +24,5 @@ edoc:
 	$(REBAR) as docs edoc
 
 
-.PHONY: all compile clean test itest check eunit ct
+.PHONY: all compile clean test itest check eunit ct doc edoc
 
