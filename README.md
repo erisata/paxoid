@@ -40,7 +40,6 @@ for duplication of the IDs and recovery from that.
 Start several nodes:
 
 ```
-   shell
 rebar3 shell --name a@127.0.0.1
 rebar3 shell --name b@127.0.0.1
 rebar3 shell --name c@127.0.0.1
@@ -49,14 +48,12 @@ rebar3 shell --name c@127.0.0.1
 Start a `paxoid` process on each node:
 
 ```
-   erlang
 paxoid:start_link(test).
 ```
 
 Then join them by running the following on any of the nodes:
 
 ```
-   erlang
 paxoid:join(test, ['a@127.0.0.1', 'b@127.0.0.1', 'c@127.0.0.1']).
 paxoid:info(test). % To get some details on the runtime.
 ```
@@ -68,7 +65,6 @@ In order to check, if ids can be retrieved in parallel, run the following
 in each of the started nodes:
 
 ```
-   erlang
 erlang:register(sh, self()),
 receive start -> rp([paxoid:next_id(test) || _ <- lists:seq(1, 100)]) end.
 ```
@@ -77,7 +73,6 @@ and then start the parallel generation of ids by running the following
 from a separate node (`rebar3 shell --name x@127.0.0.1`):
 
 ```
-   erlang
 [ erlang:send({sh, N}, start) || N <- ['a@127.0.0.1', 'b@127.0.0.1', 'c@127.0.0.1']].
 ```
 
