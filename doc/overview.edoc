@@ -62,7 +62,7 @@ paxoid:info(test). % To get some details on the runtime.
 Now you can call `paxoid:next_id(test)' to get new ID from the sequence
 on any of the nodes.
 
-In order to check, if ids can be retrieved in parallel, run the following
+In order to check, if IDs can be retrieved in parallel, run the following
 in each of the started nodes:
 
 ```
@@ -70,7 +70,7 @@ erlang:register(sh, self()),
 receive start -> rp([paxoid:next_id(test) || _ <- lists:seq(1, 100)]) end.
 '''
 
-and then start the parallel generation of ids by running the following
+and then start the parallel generation of IDs by running the following
 from a separate node (`rebar3 shell --name x@127.0.0.1'):
 
 ```

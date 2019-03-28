@@ -22,7 +22,7 @@ to implement own callback with persistence.
 
 <table width="100%" border="1" cellspacing="0" cellpadding="2" summary="function index"><tr><td valign="top"><a href="#describe-1">describe/1</a></td><td></td></tr><tr><td valign="top"><a href="#handle_check-2">handle_check/2</a></td><td>
 Checks if provided list of IDs has numbers conflicting with this node.</td></tr><tr><td valign="top"><a href="#handle_new_id-2">handle_new_id/2</a></td><td></td></tr><tr><td valign="top"><a href="#handle_new_map-3">handle_new_map/3</a></td><td></td></tr><tr><td valign="top"><a href="#handle_new_max-2">handle_new_max/2</a></td><td></td></tr><tr><td valign="top"><a href="#handle_select-4">handle_select/4</a></td><td>
-Returns a requested range of IDs owned by this node.</td></tr><tr><td valign="top"><a href="#init-1">init/1</a></td><td>
+Returns a requested range of IDs owned by this node.</td></tr><tr><td valign="top"><a href="#init-3">init/3</a></td><td>
 Initializes this callback.</td></tr></table>
 
 
@@ -70,11 +70,11 @@ Checks if provided list of IDs has numbers conflicting with this node.
 
 Returns a requested range of IDs owned by this node.
 
-<a name="init-1"></a>
+<a name="init-3"></a>
 
-### init/1 ###
+### init/3 ###
 
-`init(Args) -> any()`
+`init(Name, Node, Args) -> any()`
 
 Initializes this callback.
 

@@ -10,7 +10,7 @@ The Paxos based distributed sequence.
 
 __Behaviours:__ [`gen_server`](gen_server.md).
 
-__This module defines the `paxoid` behaviour.__<br /> Required callback functions: `init/1`, `describe/1`, `handle_new_id/2`, `handle_new_map/3`, `handle_new_max/2`, `handle_select/4`, `handle_check/2`.
+__This module defines the `paxoid` behaviour.__<br /> Required callback functions: `init/3`, `describe/1`, `handle_new_id/2`, `handle_new_map/3`, `handle_new_max/2`, `handle_select/4`, `handle_check/2`.
 
 <a name="description"></a>
 
