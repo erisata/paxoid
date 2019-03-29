@@ -24,7 +24,8 @@
     test_simple/1,
     test_burst/1,
     test_join/1,
-    test_file/1
+    test_file/1,
+    test_majority_down/1
 ]).
 -include_lib("kernel/include/inet.hrl").
 -include_lib("common_test/include/ct.hrl").
@@ -42,7 +43,8 @@ all() ->
         test_simple,
         test_burst,
         test_join,
-        test_file
+        test_file,
+        test_majority_down
     ].
 
 %%
@@ -54,12 +56,16 @@ init_per_suite(Config) ->
         _               -> ok
     end,
     {ok, _} = application:ensure_all_started(sasl),
-    {ok, ThisHost} = this_host(),
     ct:pal("Starting slave nodes...~n"),
-    pang = net_adm:ping(erlang:list_to_atom("paxoid_SUITE_A" ++ "@" ++ ThisHost)),
-    pang = net_adm:ping(erlang:list_to_atom("paxoid_SUITE_B" ++ "@" ++ ThisHost)),
-    pang = net_adm:ping(erlang:list_to_atom("paxoid_SUITE_C" ++ "@" ++ ThisHost)),
-    {ok, Nodes} = start_nodes(Config),
+    LocalNodeNames = [
+        paxoid_SUITE_A,
+        paxoid_SUITE_B,
+        paxoid_SUITE_C
+    ],
+    lists:foreach(fun (LocalNodeName) ->
+        pang = net_adm:ping(node_name(LocalNodeName))
+    end, LocalNodeNames),
+    {ok, Nodes} = start_nodes(LocalNodeNames, Config),
     ct:pal("Starting slave nodes... done, nodes=~p~n", [Nodes]),
     [{started_apps, []}, {started_nodes, Nodes} | Config].
 
@@ -83,22 +89,44 @@ end_per_suite(Config) ->
 this_host() ->
     {ok, ShortHostname} = inet:gethostname(),
     {ok, #hostent{h_name = FullHostname}} = inet:gethostbyname(ShortHostname),
-    {ok, FullHostname}.
+    FullHostname.
+
+
+%%
+%%  Extract the local part from the node name.
+%%
+local_name(Node) ->
+    case re:run(erlang:atom_to_list(Node), "^(.*?)@", [{capture, all_but_first, list}]) of
+        {match, [LocalStr]} -> erlang:list_to_atom(LocalStr);
+        nomatch             -> Node
+    end.
+
+%%
+%%
+%%
+node_name(Node) ->
+    case re:run(erlang:atom_to_list(Node), "^(.*?)@", [{capture, none}]) of
+        match   -> Node;
+        nomatch -> erlang:list_to_atom(erlang:atom_to_list(Node) ++ "@" ++ this_host())
+    end.
 
 
 %%
 %%
 %%
-start_nodes(_Config) ->
-    {ok, ThisHost} = this_host(),
-    {ok, NodeA} = slave:start(ThisHost, paxoid_SUITE_A),
-    {ok, NodeB} = slave:start(ThisHost, paxoid_SUITE_B),
-    {ok, NodeC} = slave:start(ThisHost, paxoid_SUITE_C),
-    Nodes    = [NodeA, NodeB, NodeC],
+start_nodes(Nodes, _Config) ->
+    ThisHost = this_host(),
+    StartedNodes = lists:map(fun (Node) ->
+        {ok, NodeName} = slave:start(ThisHost, local_name(Node)),
+        NodeName
+    end, Nodes),
+    StartedNodeCount = length(StartedNodes),
     CodePath = lists:filter(fun filelib:is_dir/1, code:get_path()),
-    {[true,    true,    true   ], []} = rpc:multicall(Nodes, code, set_path, [CodePath]),
-    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, application, ensure_all_started, [paxoid]),
-    {ok, lists:sort(Nodes)}.
+    {ResPath,  []} = rpc:multicall(StartedNodes, code, set_path, [CodePath]),                 % true
+    {ResStart, []} = rpc:multicall(StartedNodes, application, ensure_all_started, [paxoid]),  % {ok, _}
+    StartedNodeCount = length([ok || true    <- ResPath]),
+    StartedNodeCount = length([ok || {ok, _} <- ResStart]),
+    {ok, lists:sort(StartedNodes)}.
 
 
 %%
@@ -197,7 +225,7 @@ test_file(Config) ->
     %
     % Restart the nodes.
     ok = stop_nodes(Nodes),
-    {ok, Nodes} = start_nodes(Config),
+    {ok, Nodes} = start_nodes(Nodes, Config),
     %
     % Produce some more ids, use known nodes from a file..
     {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Opts#{join => []}]),
@@ -207,6 +235,32 @@ test_file(Config) ->
     % Check, if all the history is returned.
     {Infos, []} = rpc:multicall(Nodes, paxoid, info, [?FUNCTION_NAME]),
     [1, 2, 3, 4, 5, 6] = lists:sort(lists:append([I || {ok, #{ids := I}} <- Infos])),
+    ok.
+
+
+%%
+%%  Check if the IDs can be generated while majority is unreachable.
+%%
+test_majority_down(Config) ->
+    Nodes = proplists:get_value(started_nodes, Config),
+    Opts = #{
+        join => Nodes
+    },
+    %
+    % Produce some IDs.
+    {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, Opts]),
+    {Ids,                         []} = rpc:multicall(Nodes, paxoid, next_id,   [?FUNCTION_NAME]),
+    [1, 2, 3] = lists:sort(Ids),
+    %
+    % Stop the nodes.
+    [LuckyNode | UnluckyNodes] = Nodes,
+    ok = stop_nodes(UnluckyNodes),
+    %
+    % Produce some more ids, use known nodes from a file..
+    4 = rpc:call(LuckyNode, paxoid, next_id, [?FUNCTION_NAME]),
+    %
+    % TODO: Restart nodes.
+    {ok, _} = start_nodes(UnluckyNodes, Config),
     ok.
 
 

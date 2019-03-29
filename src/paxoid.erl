@@ -26,9 +26,9 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export_type([num/0, opts/0]).
 
--define(SYNC_INTERVAL,      5000).
--define(DEFAULT_RETRY,      1000).
--define(DEFAULT_TIMEOUT,    5000).
+-define(SYNC_INTERVAL,      1000).
+-define(DEFAULT_RETRY,      2000).
+-define(DEFAULT_TIMEOUT,   10000).
 -define(MAX_JOIN_SYNC_SIZE, 1000).
 -define(INIT_DISC_TIMEOUT,  3000).
 -define(INIT_JOIN_TIMEOUT, 15000).
@@ -351,7 +351,7 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
 %%
 %%
 init({Name, Opts}) ->
-    Now  = erlang:monotonic_time(seconds),
+    Now  = erlang:monotonic_time(millisecond),
     Node = node(),
     Nodes = maps:get(join, Opts, []),
     {CbMod, CbArgs} = case maps:get(callback, Opts, {paxoid_cb_mem, #{}}) of
@@ -456,7 +456,7 @@ handle_cast({join, Nodes}, State = #state{name = Name, node = Node, known = Know
     {noreply, NewState};
 
 handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node = ThisNode, mode = Mode, known = Known, seen = Seen, max = OldMax}) ->
-    Now      = erlang:monotonic_time(seconds),
+    Now      = erlang:monotonic_time(millisecond),
     NewKnown = lists:usort(Nodes ++ Known),
     NewSeen  = Seen#{Node => Now, ThisNode => Now},
     NewMax   = erlang:max(Max, OldMax),
@@ -498,6 +498,7 @@ handle_cast({step_prepare, StepNum, Round, ProposerNode, Partition}, State = #st
                 a_promise = Round
             };
         false ->
+            ok = step_prepared(Name, StepNum, ProposerNode, Accepted, Node, NewPartition), % This is needed for retries.
             Step#step{
                 partition = NewPartition
             }
@@ -700,7 +701,7 @@ handle_info(init_join_timeout, State = #state{name = Name, mode = Mode, node = T
 handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Known, seen = Seen, part = Part, max = Max}) ->
     %
     % Update the list of seen nodes.
-    Now = erlang:monotonic_time(seconds),
+    Now = erlang:monotonic_time(millisecond),
     NewSeen = maps:filter(fun (_, NodeTime) ->
         (Now - NodeTime) < (?SYNC_INTERVAL * 2)
     end, Seen#{ThisNode => Now}),
@@ -891,11 +892,13 @@ step_do_next_attempt(StepNum, State = #state{steps = Steps}) ->
 %%  @private
 %%  Retry is only initiated by the proposer, if the value was not yet chosen.
 %%
-step_do_retry(StepNum, StepRef, State = #state{name = Name, node = Node, retry = Retry, steps = Steps}) ->
+step_do_retry(StepNum, StepRef, State = #state{name = Name, node = Node, seen = Seen, retry = Retry, steps = Steps}) ->
     case Steps of
-        #{StepNum := Step = #step{ref = StepRef, partition = Partition, p_proposed = {Round, _Value}, purpose = Purpose}} when Purpose =/= undefined ->
-            ok = step_prepare(Name, StepNum, Partition, Round, Node),
+        #{StepNum := Step = #step{ref = StepRef, p_proposed = {Round, _Value}, purpose = Purpose}} when Purpose =/= undefined ->
+            NewPartition = maps:keys(Seen),
+            ok = step_prepare(Name, StepNum, NewPartition, Round, Node),
             NewStep = Step#step{
+                partition  = NewPartition,
                 retry_tref = erlang:send_after(Retry, self(), {step_retry,  StepNum, StepRef})
             },
             State#state{
