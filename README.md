@@ -2,7 +2,7 @@
 
 # Paxoid -- Paxos based masterless sequence. #
 
-This application implements a Paxos based masterless ID / Sequence generator.
+This application implements a [Paxos](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) based masterless ID / Sequence generator.
 It was built to assign short identifiers to the Erlang/OTP nodes in a cluster.
 The assigned node identifiers then were used to generate object identifiers
 of the form `{NodeId, LocalCounter}` locally.
