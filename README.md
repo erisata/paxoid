@@ -79,7 +79,7 @@ from a separate node (`rebar3 shell --name x@127.0.0.1`):
 
 ### <a name="Using_it_in_an_application">Using it in an application</a> ###
 
-There are to ways to start the paxoid peers:
+There are two ways to start the paxoid peers:
 
 * _Supervised by the user application._ In this case one can get a supervisor's
     child specification by calling [`paxoid:start_spec/2`](http://github.com/erisata/paxoid/blob/master/doc/paxoid.md#start_spec-2) and then pass
