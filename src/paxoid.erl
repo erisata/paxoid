@@ -26,12 +26,13 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export_type([num/0, opts/0]).
 
--define(SYNC_INTERVAL,      1000).
--define(DEFAULT_RETRY,      2000).
--define(DEFAULT_TIMEOUT,   10000).
--define(MAX_JOIN_SYNC_SIZE, 1000).
--define(INIT_DISC_TIMEOUT,  3000).
--define(INIT_JOIN_TIMEOUT, 15000).
+-define(SYNC_INTERVAL,          1000).
+-define(DEFAULT_RETRY,          2000).
+-define(DEFAULT_PROPOSE_RETRY,   200).
+-define(DEFAULT_TIMEOUT,       10000).
+-define(MAX_JOIN_SYNC_SIZE,     1000).
+-define(INIT_DISC_TIMEOUT,      3000).
+-define(INIT_JOIN_TIMEOUT,     15000).
 
 -type num() :: pos_integer().
 
@@ -302,12 +303,13 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
     giveup_tref    :: reference(),
     retry_tref     :: reference(),
     partition = [] :: [node()],                   % Partition in which the consensus should be reached.
-    p_proposed     :: step_data() | undefined,    % PROPOSER: The current proposal.
+    p_proposed     :: step_data() | undefined,    % PROPOSER: Our proposal.
+    p_selected     :: step_data() | undefined,    % PROPOSER: The value selected to accept.
     p_prms = []    :: [node()],                   % PROPOSER: Acceptor nodes, who promised to us.
     p_prm_max      :: step_data() | undefined,    % PROPOSER: Max proposal accepted by the acceptors.
     a_promise      :: step_round() | undefined,   % ACCEPTOR: Promise to not accept rounds =< this.
     a_accepted     :: step_data() | undefined,    % ACCEPTOR: Maximal accepted proposal.
-    l_vals = #{}   :: #{step_data() => [node()]}  % LEARNER:  Partially learned values.
+    l_vals = #{}   :: #{step_value() => [node()]} % LEARNER:  Partially learned values (NOTE: V instead of <N, V>).
 }).
 
 -record(join, {
@@ -372,7 +374,7 @@ init({Name, Opts}) ->
                 part    = [Node],
                 min     = Max,
                 max     = Max,
-                retry   = ?DEFAULT_RETRY,
+                retry   = ?DEFAULT_PROPOSE_RETRY,
                 steps   = #{},
                 joining = #{},
                 dup_ids = []
@@ -482,7 +484,7 @@ handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node
     end,
     {noreply, NewState};
 
-handle_cast({step_prepare, StepNum, Round, ProposerNode, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
+handle_cast({step_prepare, StepNum, Round, ProposerNode, Partition}, State = #state{name = Name, node = ThisNode, steps = Steps}) ->
     % PAXOS(step): PROPOSER --prepare--> ACCEPTOR.
     Step = #step{
         partition  = OldPartition,
@@ -492,13 +494,15 @@ handle_cast({step_prepare, StepNum, Round, ProposerNode, Partition}, State = #st
     NewPartition = lists:usort(Partition ++ OldPartition),
     NewStep = case (Promise =:= undefined) orelse (Promise < Round) of
         true ->
-            ok = step_prepared(Name, StepNum, ProposerNode, Accepted, Node, NewPartition),
+            ok = step_prepared(Name, StepNum, ProposerNode, Accepted, ThisNode, NewPartition),
             Step#step{
                 partition = NewPartition,
                 a_promise = Round
             };
         false ->
-            ok = step_prepared(Name, StepNum, ProposerNode, Accepted, Node, NewPartition), % This is needed for retries.
+            % Accoring to the Paxos paper, we dont need to send this message in this case.
+            % Although we send it in order to handle retries initiated by the proposers.
+            ok = step_prepared(Name, StepNum, ProposerNode, Accepted, ThisNode, NewPartition),
             Step#step{
                 partition = NewPartition
             }
@@ -510,6 +514,7 @@ handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State =
     Step = #step{
         partition  = OldPartition,
         p_proposed = Proposed = {Round, _},
+        p_selected = Selected,
         p_prms     = Promised,
         p_prm_max  = MaxAccepted
     } = maps:get(StepNum, Steps, #step{}),
@@ -521,30 +526,37 @@ handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State =
         {_,         undefined} -> MaxAccepted;
         {_,         _        } -> erlang:max(Accepted, MaxAccepted)
     end,
-    NewStep = Step#step{
-        partition = NewPartition,
-        p_prms    = NewPromised,
-        p_prm_max = NewAccepted
-    },
-    case length(NewPromised) * 2 > length(NewPartition) of
+    NewStep = case length(NewPromised) * 2 > length(NewPartition) of
         true ->
-            Proposal = case NewAccepted of
-                undefined   -> Proposed;
-                {_, AccVal} -> {Round, AccVal}
+            Proposal = case {Selected, NewAccepted} of
+                {undefined, undefined  } -> Proposed;
+                {undefined, {_, AccVal}} -> {Round, AccVal};
+                {_,         _          } -> Selected
             end,
-            ok = step_accept(Name, StepNum, NewPartition, Proposal);
+            ok = step_accept(Name, StepNum, NewPartition, Proposal),
+            Step#step{
+                partition  = NewPartition,
+                p_selected = Proposal,
+                p_prms     = NewPromised,
+                p_prm_max  = NewAccepted
+            };
         false ->
-            ok
+            Step#step{
+                partition  = NewPartition,
+                p_prms     = NewPromised,
+                p_prm_max  = NewAccepted
+            }
     end,
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
 handle_cast({step_accept, StepNum, Proposal = {Round, _Value}, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
     Step = #step{
-        partition = OldPartition,
-        a_promise = Promise
+        partition  = OldPartition,
+        a_promise  = Promise,
+        a_accepted = OldAccepted
     } = maps:get(StepNum, Steps, #step{}),
     NewPartition = lists:usort(Partition ++ OldPartition),
-    NewStep = case Round >= Promise of
+    NewStep = case (Promise =:= undefined) orelse (Round >= Promise) of
         true ->
             ok = step_accepted(Name, StepNum, NewPartition, Proposal, Node),
             Step#step{
@@ -552,13 +564,17 @@ handle_cast({step_accept, StepNum, Proposal = {Round, _Value}, Partition}, State
                 a_accepted = Proposal
             };
         false ->
+            case OldAccepted of
+                undefined -> ok;
+                _         -> ok = step_accepted(Name, StepNum, NewPartition, OldAccepted, Node)
+            end,
             Step#step{
                 partition  = NewPartition
             }
     end,
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
-handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, Partition}, State) ->
+handle_cast({step_accepted, StepNum, _Proposal = {_Round, Value}, AcceptorNode, Partition}, State) ->
     #state{
         node   = ThisNode,
         cb_mod = CbMod,
@@ -571,8 +587,8 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
         partition   = OldPartition,
         l_vals      = LearnedValues
     } = maps:get(StepNum, Steps, #step{}),
-    NewAccepted = lists:usort([AcceptorNode | maps:get(Proposal, LearnedValues, [])]),
-    NewLearnedValues = LearnedValues#{Proposal => NewAccepted},
+    NewAccepted = lists:usort([AcceptorNode | maps:get(Value, LearnedValues, [])]),
+    NewLearnedValues = LearnedValues#{Value => NewAccepted},
     NewPartition = lists:usort(Partition ++ OldPartition),
     NewStep = Step#step{
         partition = NewPartition,

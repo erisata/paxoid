@@ -168,7 +168,13 @@ test_burst(Config) ->
     Nodes = proplists:get_value(started_nodes, Config),
     {[{ok, _}, {ok, _}, {ok, _}], []} = rpc:multicall(Nodes, paxoid, start_sup, [?FUNCTION_NAME, #{join => Nodes}]),
     {Ids,                         []} = rpc:multicall(Nodes, ?MODULE, do_next_id_seq, [?FUNCTION_NAME, Count]),
-    ct:pal("IDS: ~p~n", [Ids]),
+    ok = fun
+        F([A, B | C]) -> B = A + 1, F([B | C]);
+        F([_])        -> F([]);
+        F([])         -> ok
+    end(lists:sort(lists:append(Ids))),
+    6000 = length(lists:append(Ids)),
+    6000 = length(lists:usort(lists:append(Ids))),
     ExpectedIds = lists:seq(1, Count * 3),
     ExpectedIds = lists:sort(lists:append(Ids)),
     ok.
