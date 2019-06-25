@@ -727,13 +727,26 @@ handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Kno
         (PartNode =:= ThisNode) orelse maps:is_key(PartNode, NewSeen)
     end, Part),
     %
-    % TODO: Should we update the partitions for all the ongoing steps?
+    % Update the partitions for all the ongoing steps?
     %
+    NewSteps = maps:fold(fun(StepNum, Step, Acc) ->
+        #step{purpose=Purpose, partition=OldPartition} = Step,
+
+        NewStep = case Purpose of 
+            {reply, _Caller} ->
+                Step#step{partition=NewPart};
+            _ ->
+                Step
+        end,
+
+        Acc#{StepNum => NewStep}
+    end, #{}, Steps),
     ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 1),
     _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
     NewState = cb_handle_changed_partition(Part, State#state{
         seen = NewSeen,
-        part = NewPart
+        part = NewPart,
+        steps = NewSteps
     }),
     {noreply, NewState};
 
